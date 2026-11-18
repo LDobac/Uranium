@@ -61,7 +61,7 @@ def test_053_R2_bot_labels_join_rules_and_coverage(tmp_path):
     assert g[5] == {"held_8m": None, "held_s": None, "alive_10m": None, "win": None, "from": "error"}
     assert g[6] == {"held_8m": None, "held_s": None, "alive_10m": None, "win": None, "from": None}
     assert 7 not in g and js["games"]["6"]["sha"] == "f" * 64 and js["games"]["0"]["start"] == 0
-    assert js["join"] == {"results": 5, "dump": 0, "unmatched": 1, "skipped_view": 1, "other_view": 0, "ambiguous_view": 0, "error": 1}
+    assert js["join"] == {"results": 5, "dump": 0, "unmatched": 1, "skipped_view": 1, "other_view": 0, "ambiguous_view": 0, "error": 1, "aborted": 0}
     st = js["results_stats"]["files"][next(iter(js["results_stats"]["files"]))]
     assert st["bot_rows"] == 8 and st["other_rows"] == 2 and st["games"] == 7 and st["error_rows"] == 1
     cov = js["coverage"]
@@ -76,6 +76,44 @@ def test_053_R2_bot_labels_join_rules_and_coverage(tmp_path):
     moved = _games(tmp_path / "moved", shas[:6] + ["f" * 64, shas[6]], {7: {"skipped": True}, 2: {"start": 3}})
     with pytest.raises(SystemExit, match="another dump"):
         pl.read(tmp_path / "labels.json", moved)
+
+
+def _jsonl(path: Path, rows: list) -> None:
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def test_053_R2_aborted_games_in_the_ledger_get_no_labels(tmp_path):
+    plan = tmp_path / "plan"
+    shas = [_replay(plan / "replays", n) for n in range(1, 4)]
+    rows = [_row(1, won=True, end=7000, reason="Surrender"), _row(2, won=None, end=14401, scv_8m=9, reason="TimeLimitDraw"), _row(3, won=True, end=7000)]
+    _jsonl(plan / "results.jsonl", rows)
+    ledger = [{"game_id": 1, "outcome": "Aborted"}, {"game_id": 2, "outcome": "Aborted"}, {"game_id": 3, "outcome": "Finished"}]
+    dump = _games(tmp_path / "dump", shas)
+    before = pl.build(dump, "model", [plan / "results.jsonl"])
+    assert before["games"]["0"]["win"] == 1 and before["games"]["1"]["held_8m"] == 1 and before["join"]["aborted"] == 0
+    assert next(iter(before["results_stats"]["files"].values()))["ledger_files"] == 0
+    _jsonl(plan / "games.jsonl", ledger)
+    js = pl.build(dump, "model", [plan / "results.jsonl"])
+    none = {h: None for h in pl.HEADS}
+    for i in ("0", "1"):
+        assert {h: js["games"][i][h] for h in pl.HEADS} == none and js["games"][i]["from"] == "aborted"
+    assert js["games"]["2"]["win"] == 1 and js["games"]["2"]["from"] == "results"
+    assert js["join"]["aborted"] == 2 and js["join"]["results"] == 1 and js["join"]["error"] == 0
+    assert js["coverage"]["aborted"] == 2 and js["coverage"]["held_8m"]["labeled"] == 1 and js["coverage"]["games"] == 3
+    st = next(iter(js["results_stats"]["files"].values()))
+    assert st["ledger_files"] == 1 and st["ledger_rows"] == 3 and st["aborted"] == 2
+    job = tmp_path / "job"
+    (job / "plans").mkdir(parents=True)
+    (job / "plans" / "a.toml").write_text('name = "stage"\nseeds = [1]\n')
+    (job / "job.toml").write_text('stages = ["plans/a.toml"]\n')
+    s5, s6 = _replay(job / "stage" / "replays", 5), _replay(job / "stage" / "replays", 6)
+    (job / "results").mkdir()
+    (job / "games").mkdir()
+    _jsonl(job / "results" / "h.jsonl", [_row(100005, won=True, end=7000), _row(10_100_005, won=False, end=7000), _row(100006, won=True, end=7000, reason="Surrender")])
+    _jsonl(job / "games" / "h.jsonl", [{"game_id": 100005, "outcome": "Aborted"}, {"game_id": 10_100_005, "outcome": "Finished"}, {"game_id": 100006, "outcome": "Aborted"}])
+    jj = pl.build(_games(tmp_path / "jd", [s5, s6]), "model", [job / "results" / "h.jsonl"])
+    assert jj["games"]["0"]["win"] == 0 and jj["games"]["0"]["from"] == "results"
+    assert jj["games"]["1"]["win"] is None and jj["games"]["1"]["from"] == "aborted" and jj["join"]["aborted"] == 1
 
 
 def test_053_R2_two_views_only_the_model_view_is_labeled(tmp_path):

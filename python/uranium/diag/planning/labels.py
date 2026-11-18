@@ -1,4 +1,4 @@
-"""Outcome labels of plan-dump games (053-R2): held_8m, held_s, alive_10m and win from the session results, joined by replay sha256"""
+"""Outcome labels of plan-dump games (053-R2): held_8m, held_s, alive_10m and win from the session results, joined by replay sha256; Aborted games (games ledger) get none"""
 
 import json
 import re
@@ -117,12 +117,26 @@ def p0_builds(plan_dir: Path) -> dict:
     return out
 
 
+def ledger_files(job: Path | None, files: list) -> list[Path]:
+    if job:
+        return sorted((job / "games").glob("*.jsonl"))
+    near = Path(files[0]).parent / "games.jsonl" if files else None
+    return [near] if near is not None and near.is_file() else []
+
+
+def aborted_ids(ledger: list[Path]) -> tuple[set, int]:
+    rows = read_rows(ledger)[0]
+    return {int(g["game_id"]) for g in rows if g.get("outcome") == "Aborted" and "game_id" in g}, len(rows)
+
+
 def session_games(job: Path | None, files: list, side: str) -> tuple[dict, dict]:
     stages = {k: (p.get("name") or Path(f).stem) for k, f, p in ec.job_stages(job)} if job else {}
     rows, bad = read_rows(files)
     builds = p0_builds(Path(files[0]).parent) if side == "scripted" and not job and files else {}
+    ledger = ledger_files(job, files)
+    aborted, n_ledger = aborted_ids(ledger)
     st = {"files": len(files), "rows": len(rows), "bad_lines": bad, "bot_rows": 0, "other_rows": 0, "error_rows": 0, "retries_dropped": 0,
-          "ambiguous_slot": 0, "games": 0, "p0_build_known": bool(builds)}
+          "ambiguous_slot": 0, "games": 0, "p0_build_known": bool(builds), "ledger_files": len(ledger), "ledger_rows": n_ledger, "aborted": 0}
     best: dict = {}
     for i, r in enumerate(rows):
         gid = int(r["game_id"])
@@ -151,8 +165,9 @@ def session_games(job: Path | None, files: list, side: str) -> tuple[dict, dict]
             replay = job / stages[stage] / "replays" / f"g{n}.rep"
         else:
             replay = Path(files[0]).parent / "replays" / f"g{n}.rep"
-        out[key] = {"replay": replay, "row": last[-1]}
+        out[key] = {"replay": replay, "row": last[-1], "aborted": int(last[-1]["game_id"]) in aborted}
     st["games"] = len(out)
+    st["aborted"] = sum(g["aborted"] for g in out.values())
     return out, st
 
 
@@ -172,7 +187,8 @@ def outcomes_by_sha(paths, side: str) -> tuple[dict, dict]:
                 dup += 1
                 by_sha[sha] = None
                 continue
-            by_sha[sha] = {"heads": bot_heads(g["row"], side), "error": g["row"].get("error") is not None, "game": key[1], "stage": key[0]}
+            by_sha[sha] = {"heads": dict(NONE) if g["aborted"] else bot_heads(g["row"], side), "error": g["row"].get("error") is not None,
+                           "aborted": g["aborted"], "game": key[1], "stage": key[0]}
         no_replay += st["no_replay"]
         stats[redact(job / "results" if job else files[0])] = st
     ok = {k: v for k, v in by_sha.items() if v is not None}
@@ -181,7 +197,7 @@ def outcomes_by_sha(paths, side: str) -> tuple[dict, dict]:
 
 def join(games: dict, kind: str, by_sha: dict | None, views: dict | None = None) -> tuple[dict, dict]:
     labels = {}
-    how = {"results": 0, "dump": 0, "unmatched": 0, "skipped_view": 0, "other_view": 0, "ambiguous_view": 0, "error": 0}
+    how = {"results": 0, "dump": 0, "unmatched": 0, "skipped_view": 0, "other_view": 0, "ambiguous_view": 0, "error": 0, "aborted": 0}
     live = {gid: e for gid, e in games.items() if not e.get("skipped")}
     how["skipped_view"] = len(games) - len(live)
     per_sha: dict = {}
@@ -208,14 +224,15 @@ def join(games: dict, kind: str, by_sha: dict | None, views: dict | None = None)
             labels[int(gid)] = {**NONE, **base, "from": None}
             how["unmatched"] += 1
             continue
-        labels[int(gid)] = {**hit["heads"], **base, "from": "error" if hit["error"] else "results"}
-        how["error" if hit["error"] else "results"] += 1
+        how_ = "aborted" if hit.get("aborted") else "error" if hit["error"] else "results"
+        labels[int(gid)] = {**hit["heads"], **base, "from": how_}
+        how[how_] += 1
     return labels, how
 
 
 def coverage(labels: dict) -> dict:
     n = len(labels)
-    out = {"games": n, "error": sum(v.get("from") == "error" for v in labels.values())}
+    out = {"games": n, "error": sum(v.get("from") == "error" for v in labels.values()), "aborted": sum(v.get("from") == "aborted" for v in labels.values())}
     for h in HEADS:
         k = sum(v.get(h) is not None for v in labels.values())
         pos = sum(v.get(h) == 1 for v in labels.values())
@@ -257,7 +274,8 @@ def read(path, dump) -> dict:
 def add_args(p) -> None:
     p.add_argument("--dump", required=True, help="plan-dump folder (its games.json)")
     p.add_argument("--kind", required=True, choices=("human",) + BOT_KINDS, help="source kind (human: labels from the dump)")
-    p.add_argument("--results", default="", help="session results.jsonl files, comma-separated (bot kinds; a job's <job>/results/*.jsonl are read together)")
+    p.add_argument("--results", default="", help="session results.jsonl files, comma-separated (bot kinds; a job's <job>/results/*.jsonl are read together; "
+                   "games Aborted in the games ledger beside them, <job>/games/*.jsonl or games.jsonl, get no labels)")
     p.add_argument("--side", choices=SIDES, help="results field of the bot's session (default teacher: scripted, model: model)")
     p.add_argument("--views", help="views JSON ({\"bot\": [...], \"model\": [[sha256, start], ...]}): only the model views get labels")
     p.add_argument("--out", required=True, help="labels file to write (e.g. <dump>/labels.json)")

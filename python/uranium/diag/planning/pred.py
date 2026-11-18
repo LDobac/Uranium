@@ -623,7 +623,7 @@ def val_loss(net, data: Data, rows: np.ndarray, k: int, variant: str, st: dict, 
 
 def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, steps: int, batch: int, lr: float, seed: int, log_every: int = 500,
               weights: np.ndarray | None = None, val_rows: np.ndarray | None = None, val_every: int = 500, patience: int = 4,
-              split_nets: bool = False, score_wd: float = 0.0, info: dict | None = None) -> tuple[Predictor, list]:
+              split_nets: bool = False, score_wd: float = 0.0, score_val_every: int | None = None, info: dict | None = None) -> tuple[Predictor, list]:
     torch.manual_seed(seed)
     if split_nets:
         net = Split(new_net(data, variant, st), new_net(data, variant, st))
@@ -638,6 +638,7 @@ def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, s
     rng = np.random.default_rng(seed)
     cum = None if weights is None else np.cumsum(np.asarray(weights, np.float64))
     val = None if val_rows is None else {g: {"best": float("inf"), "step": 0, "state": None, "bad": 0, "stopped": False} for g in groups}
+    every = {g: (score_val_every if g == "score" and score_val_every else val_every) for g in groups}
     curve = []
     drawn_kind, drawn_act = np.zeros(len(KINDS), np.int64), np.zeros(data.n_act, np.int64)
     log = []
@@ -668,10 +669,11 @@ def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, s
             n = log_every if step % log_every == 0 else step % log_every
             log.append({"step": step, **{kk: v / n for kk, v in acc.items()}})
             acc = {}
-        if val is not None and (step % val_every == 0 or step == steps):
+        due = [] if val is None else [g for g in active if step % every[g] == 0 or step == steps]
+        if due:
             v = val_loss(net, data, val_rows, k, variant, st, o_on, p_on)
-            curve.append({"step": step, **v})
-            for g in active:
+            curve.append({"step": step, **v, "nets": due})
+            for g in due:
                 cur = v["world"] + v["score"] if g == "all" else v[g]
                 if cur < val[g]["best"]:
                     val[g].update(best=cur, step=step, bad=0, state={kk: t.detach().clone() for kk, t in groups[g][0].state_dict().items()})
@@ -692,7 +694,7 @@ def train_one(data: Data, variant: str, k: int, rows: np.ndarray, st: dict, *, s
         info["drawn"] = {"rows": int(drawn_kind.sum()), "kinds": {KINDS[i]: float(drawn_kind[i] / total) for i in range(len(KINDS)) if drawn_kind[i]},
                          "op_actions": {int(x): float(drawn_act[x] / total) for x in np.nonzero(drawn_act)[0]}}
         if val is not None:
-            info["val"] = {"rows": int(len(val_rows)), "every": val_every, "patience": patience, "last_step": step, "curve": curve,
+            info["val"] = {"rows": int(len(val_rows)), "every": val_every, "every_by_net": every, "patience": patience, "last_step": step, "curve": curve,
                            "best": {g: {"step": e["step"], "loss": e["best"], "stopped": e["stopped"]} for g, e in val.items()}}
     return net, log
 

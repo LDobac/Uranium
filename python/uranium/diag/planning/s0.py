@@ -68,7 +68,8 @@ def add_args(p) -> None:
     p.add_argument("--rare-share", type=float, default=0.001, help="with --mix: operation actions under this training-row share get the rare weight")
     p.add_argument("--rare-x", type=float, default=20.0, help="with --mix: rare operation-action weight max(--op-x, min(this, --rare-share / share))")
     p.add_argument("--val-frac", type=float, default=0.0, help="validation share of the training games (game level; 0 = no validation, fixed --steps)")
-    p.add_argument("--val-every", type=int, default=500, help="with --val-frac: steps between validation losses")
+    p.add_argument("--val-every", type=int, default=500, help="with --val-frac: steps between validation losses (with --split-nets: of the world net)")
+    p.add_argument("--score-val-every", type=int, default=100, help="with --val-frac and --split-nets: steps between validation losses of the score net")
     p.add_argument("--patience", type=int, default=4, help="with --val-frac: checks without a lower validation loss before a net stops")
     p.add_argument("--max-steps", type=int, default=20000, help="with --val-frac: step limit (replaces --steps)")
     p.add_argument("--val-rows", type=int, default=50000, help="with --val-frac: at most this many validation rows (evenly spaced)")
@@ -120,6 +121,8 @@ def training(a) -> dict:
         out["val"] = {"val_frac": a.val_frac, "every": a.val_every, "patience": a.patience, "max_steps": a.max_steps, "rows": a.val_rows}
     if a.split_nets:
         out["split_nets"] = {"score_wd": a.score_wd}
+        if a.val_frac > 0:
+            out["val"]["score_every"] = a.score_val_every
     return out
 
 
@@ -164,7 +167,7 @@ def train_all(data: pp.Data, a, ks, variants, models: Path) -> dict:
                 raise SystemExit(f"plan-s0: {name}: no validation rows (--val-frac {a.val_frac})")
             extra.update(val_every=a.val_every, patience=a.patience)
         if a.split_nets:
-            extra.update(split_nets=True, score_wd=a.score_wd)
+            extra.update(split_nets=True, score_wd=a.score_wd, score_val_every=a.score_val_every)
         steps = a.max_steps if "val" in tr else a.steps
         net, lg = pp.train_one(data, v, k, rows, stats[key], steps=steps, batch=a.batch, lr=a.lr, seed=a.seed, info=info, **extra)
         meta = {"variant": v, "k": k, "kinds": kinds, "rows": int(len(rows)), "steps": steps, "batch": a.batch, "lr": a.lr, "seed": a.seed,
@@ -956,6 +959,8 @@ def run(a) -> int:
     training(a)
     if a.val_frac > 0 and a.max_steps < a.val_every:
         raise SystemExit(f"plan-s0: --max-steps {a.max_steps} is below --val-every {a.val_every}")
+    if a.val_frac > 0 and a.split_nets and not 0 < a.score_val_every <= a.max_steps:
+        raise SystemExit(f"plan-s0: --score-val-every {a.score_val_every} is not in 1..--max-steps {a.max_steps}")
     t0 = time.time()
     labels, joins = source_labels(a, srcs, qn, drop)
     data = pp.Data(srcs, ks, a.eval_frac, a.split_seed, drop, keep_bot=a.keep_bot_perspective, maps=maps, design=design, mmap=a.mmap, q_names=qn,

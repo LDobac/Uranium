@@ -167,6 +167,38 @@ def test_053_AC3_R4_early_stopping_keeps_the_best_step_per_net(tmp_path):
     assert isinstance(back, pp.Split) and _same(back, net)
 
 
+def test_053_AC3_R4_score_net_validates_on_its_own_interval(tmp_path):
+    torch.set_num_threads(1)
+    p = fake_dump(tmp_path / "a", n_games=12)
+    data = pp.Data([pp.Source("a", "teacher", "split", str(p))], ks=(8,), eval_frac=0.25, val_frac=0.34)
+    rows, val = data.pair_rows(8, "train"), data.pair_rows(8, "val")
+    st = data.stats(rows, 8)
+    info = {}
+    net, _ = pp.train_one(data, "A", 8, rows, st, steps=120, batch=64, lr=3e-2, seed=1, val_rows=val, val_every=30, patience=50,
+                          split_nets=True, score_wd=0.01, score_val_every=10, info=info)
+    v = info["val"]
+    assert [c["step"] for c in v["curve"]] == list(range(10, 121, 10)) and v["every_by_net"] == {"world": 30, "score": 10}
+    assert all(c["nets"] == (["world", "score"] if c["step"] % 30 == 0 else ["score"]) for c in v["curve"])
+    for g in ("world", "score"):
+        seen = [(c[g], c["step"]) for c in v["curve"] if g in c["nets"]]
+        assert min(seen)[1] == v["best"][g]["step"] and min(seen)[0] == v["best"][g]["loss"]
+    assert v["best"]["world"]["step"] % 30 == 0
+    got = _val_loss(net, data, val, st)
+    assert got["world"] == pytest.approx(v["best"]["world"]["loss"], rel=1e-6) and got["score"] == pytest.approx(v["best"]["score"]["loss"], rel=1e-6)
+    stop = {}
+    pp.train_one(data, "A", 8, rows, st, steps=300, batch=64, lr=3e-2, seed=1, val_rows=val, val_every=100, patience=2,
+                 split_nets=True, score_wd=0.01, score_val_every=10, info=stop)
+    b = stop["val"]["best"]["score"]
+    sc = [c["step"] for c in stop["val"]["curve"] if "score" in c["nets"]]
+    assert b["stopped"] and sc[-1] == b["step"] + 2 * 10
+    same, plain = {}, {}
+    a1, _ = pp.train_one(data, "A", 8, rows, st, steps=60, batch=64, lr=3e-2, seed=1, val_rows=val, val_every=20, patience=2, split_nets=True,
+                         score_wd=0.01, score_val_every=20, info=same)
+    a2, _ = pp.train_one(data, "A", 8, rows, st, steps=60, batch=64, lr=3e-2, seed=1, val_rows=val, val_every=20, patience=2, split_nets=True,
+                         score_wd=0.01, info=plain)
+    assert _same(a1, a2) and same["val"]["best"] == plain["val"]["best"]
+
+
 def _bot_results(dump: Path, plan: Path) -> Path:
     games = json.loads((dump / "games.json").read_text())
     rows = []
@@ -197,7 +229,7 @@ def test_053_plan_s0_with_labels_mix_validation_and_split_nets(tmp_path):
     with pytest.raises(SystemExit, match="session results"):
         main([*base, "--out", str(tmp_path / "x")])
     args = [*base, "--results", f"teach={ra}", "--side", "teach=model", "--results", f"mod={rm}", "--mix", "human=0.2", "--val-frac", "0.25",
-            "--val-every", "10", "--patience", "2", "--max-steps", "40", "--split-nets"]
+            "--val-every", "10", "--patience", "2", "--max-steps", "40", "--score-val-every", "5", "--split-nets"]
     out = tmp_path / "o"
     assert main([*args, "--out", str(out)]) == 0
     cov = json.loads((out / "coverage.json").read_text())
@@ -208,10 +240,12 @@ def test_053_plan_s0_with_labels_mix_validation_and_split_nets(tmp_path):
     assert set(mix) == {"U_k8", "A_k8"} and abs(mix["A_k8"]["kinds"]["human"]["drawn"] - 0.2) < 0.03
     assert "Build_Bunker" in mix["A_k8"]["op_actions"]
     v = json.loads((out / "val" / "A_k8.json").read_text())
-    assert set(v["best"]) == {"world", "score"} and v["curve"][0]["step"] == 10
+    assert set(v["best"]) == {"world", "score"} and v["curve"][0]["step"] == 5 and v["curve"][0]["nets"] == ["score"]
+    assert v["every_by_net"] == {"world": 10, "score": 5} and all(c["nets"] == ["world", "score"] for c in v["curve"] if c["step"] % 10 == 0)
     rep = json.loads((out / "s0.json").read_text())
     assert rep["settings"]["q_heads"] == heads.split(",") and set(rep["verdict"]) == set(heads.split(","))
     assert rep["settings"]["training"]["split_nets"] == {"score_wd": 0.01} and rep["coverage"]["mod"]["games"] == 30
+    assert rep["settings"]["training"]["val"]["score_every"] == 5
     assert set(rep["M1"]["8"]["pooled"]["all"]) >= set(heads.split(",")) and "val" in rep["models"]["A_k8"]
     srcs = [pp.Source("teach", "teacher", "split", str(a)), pp.Source("mod", "model", "split", str(m)), pp.Source("hum", "human", "train", str(h))]
     d = pp.Data(srcs, ks=(8,), val_frac=0.25)
