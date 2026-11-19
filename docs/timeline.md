@@ -781,3 +781,4 @@
 
 ## 2026-11-20
 - 07:36 — 끝 · 새 리포트: 요약 `s_pool` → Core는 정보가 안 쓰임(평균 · 섞기 차이 ≤ 0.0004 NLL/머리, 상수 바이어스만), 위치 머리는 CNN 특징에 크게 의존(지우면 위치 NLL 5.46 → 8.02, 4칸 안 0.49 → 0.07, 건물 배치 정확 칸 0.25 → 0.05) ([spatial_ablation](report/investigation/2026_11_19_23_00_spatial_ablation.md))
+- 08:41 — 결정(사용자, 08:3x) · 새 리포트: 모델 확대 B(t2 줄기 재학습)에 공간 인코더 CNN 제거 → linear projection 변경을 더함, 인수인계 문서(구성 기본안 · 줄기 · 질문 12개 · 작업 순서) ([scaleup_linear_spatial_handoff](report/plan/2026_11_20_08_41_scaleup_linear_spatial_handoff.md))
