@@ -14,7 +14,7 @@ from uranium.clip import clip_global_norm
 from uranium.device import adam_impl, autocast, compile_graphs, compiled, impl_settings, mark_dynamic
 from uranium.model import UraniumNet, to_obs
 from uranium.model.auxiliary import aux_loss, jepa_std
-from uranium.model.config import AUX_JEPA_SLOTS, CORES, VariantConfig, check_aux, new_net_config
+from uranium.model.config import AUX_JEPA_SLOTS, CORES, VariantConfig, aux_adam_eps, check_aux, new_net_config
 from uranium.model.monitor import SPEC_COLUMNS, ReluMonitor, channel_counts_of, packed, relu_stats, spatial_alarm, spatial_due, spatial_every
 from uranium.model.net import stage, to_device, trim_entity_pad
 
@@ -55,6 +55,7 @@ class BcTrainer:
     def __init__(self, cfg: dict, net: UraniumNet, device: torch.device, precision: str, entity_chunk: int = 0):
         self.cfg = cfg
         self.aux = check_aux(net.cfg.variant, cfg.get("aux"))
+        self.aux_eps = aux_adam_eps(net.cfg.variant, cfg.get("aux"))
         self.ks = list(net.cfg.variant.aux_jepa)
         self.monitor_every = spatial_every(cfg)
         self.net = net.to(device).train()
@@ -64,7 +65,7 @@ class BcTrainer:
         self.pad_entities = bc_pad_entities(cfg["pad_entities"])
         self.params = list(self.net.parameters())
         self.apart = self.net.win_open_params()
-        self.opt = torch.optim.AdamW(self.params, lr=cfg["lr"], betas=ADAM_BETAS, eps=ADAM_EPS, weight_decay=cfg["weight_decay"], **adam_impl())
+        self.opt = torch.optim.AdamW(self.optimizer_groups(), lr=cfg["lr"], betas=ADAM_BETAS, eps=ADAM_EPS, weight_decay=cfg["weight_decay"], **adam_impl())
         self.states: list = []
         self.skipped = 0
         self.phases = os.environ.get("URANIUM_BC_PROFILE", "") not in ("", "0")
@@ -106,6 +107,12 @@ class BcTrainer:
         if start == "resume":
             ckpt.load_optimizer(Path(dir), ckpt.OPTIM_MAIN, t.net, t.opt)
         return t
+
+    def optimizer_groups(self) -> list:
+        if self.aux_eps is None:
+            return self.params
+        aux = {id(p) for p in self.net.aux_params()}
+        return [{"params": [p for p in self.params if id(p) not in aux]}, {"params": [p for p in self.params if id(p) in aux], "eps": self.aux_eps}]
 
     def group_size(self) -> int:
         m, lanes = self.cfg["micro_lanes"], self.cfg["lanes"]

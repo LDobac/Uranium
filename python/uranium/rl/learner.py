@@ -16,7 +16,7 @@ from uranium.device import DEVICE_LOCK, RL_CHANNELS_LAST, RL_COMPILE, adam_impl,
 from uranium.env import env_choice
 from uranium.model import to_obs
 from uranium.model.auxiliary import aux_loss, jepa_std
-from uranium.model.config import AUX_JEPA_SLOTS, check_aux
+from uranium.model.config import AUX_EPS_KEY, AUX_JEPA_SLOTS, check_aux
 from uranium.model.layers import CHANNELS_LAST_MODES
 from uranium.model.monitor import SPEC_COLUMNS, ReluMonitor, channel_counts_of, packed, relu_stats, spatial_alarm, spatial_due, spatial_every
 from uranium.model.net import LABEL_KEYS, OBS_KEYS, phase_split, stage, to_device, trim_entity_pad
@@ -205,6 +205,8 @@ class Learner:
     def __init__(self, cfg: dict, net, bc, device: torch.device, precision: str, algo: str, update: int = 0, micro_lanes: int | None = None, refs: list | None = None, race_ref: list | None = None):
         self.cfg = cfg
         self.aux = check_aux(net.cfg.variant, cfg.get("aux"))
+        if (cfg.get("aux") or {}).get(AUX_EPS_KEY) is not None:
+            raise ValueError(f"[aux] {AUX_EPS_KEY} is BC only (041-R23 ⑦): the RL learner refuses it (042-R21)")
         self.ks = list(net.cfg.variant.aux_jepa)
         self.monitor_every = spatial_every(cfg)
         self.device = device

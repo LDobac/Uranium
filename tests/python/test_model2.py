@@ -9,7 +9,7 @@ from safetensors import safe_open
 
 from uranium import ckpt
 from uranium.model import UraniumNet, UraniumNetConfig, action_columns
-from uranium.model.config import AUX_JEPA_SLOTS, MODEL2_KEYS, VariantConfig, check_aux
+from uranium.model.config import AUX_JEPA_SLOTS, MODEL2_KEYS, VariantConfig, aux_adam_eps, check_aux
 from uranium.model.net import join_parts
 
 from testkit import HEADS, SEG, VARIANTS, net_of, rows_at, tiny
@@ -93,6 +93,20 @@ def test_check_aux_041_r23_042_r21():
         check_aux(priv, {"priv": 0.2, "privileged": 0.2})
 
 
+def test_check_aux_adam_eps_041_r23():
+    off, both = VariantConfig(), VariantConfig(aux_priv=True, aux_jepa=[1])
+    aux = {"priv": 0.2, "jepa": 0.1, "adam_eps": 1e-8}
+    assert check_aux(both, aux) == {"priv": 0.2, "jepa": 0.1}
+    assert aux_adam_eps(both, aux) == 1e-8 and aux_adam_eps(both, {**aux, "adam_eps": 1}) == 1.0
+    assert aux_adam_eps(both, {"priv": 0.2, "jepa": 0.1}) is None and aux_adam_eps(off, None) is None and aux_adam_eps(off, {}) is None
+    for v, a in [(off, {"adam_eps": 1e-8}), (off, aux)]:
+        with pytest.raises(ValueError, match="041-R23"):
+            aux_adam_eps(v, a)
+    for e in (0, 0.0, -1e-8, float("inf"), float("nan"), True, "1e-8"):
+        with pytest.raises(ValueError, match="041-R23"):
+            aux_adam_eps(both, {**aux, "adam_eps": e})
+
+
 def test_trainers_refuse_aux_mismatch_041_r23():
     from uranium.bc.trainer import BcTrainer
     from uranium.rl.learner import Learner
@@ -125,6 +139,26 @@ def test_bc_config_passes_aux_to_python_041_r23(tiny_config):
     bad.write_text(tiny_config.read_text(encoding="utf-8") + "\n[aux]\nprv = 0.25\n", encoding="utf-8")
     with pytest.raises(Exception):
         _core.bc_config(str(bad), "s1")
+
+
+def test_bc_config_passes_aux_adam_eps_041_r23(tiny_config):
+    from uranium import _core
+
+    p = tiny_config.with_name("bc_eps.toml")
+    base = tiny_config.read_text(encoding="utf-8") + "\n[aux]\npriv = 0.25\njepa = 0.5\n"
+    p.write_text(base, encoding="utf-8")
+    js, fp = _core.bc_config(str(p), "s1")
+    assert json.loads(js)["aux"] == {"priv": 0.25, "jepa": 0.5}
+    p.write_text(base + "adam_eps = 1e-8\n", encoding="utf-8")
+    js2, fp2 = _core.bc_config(str(p), "s1")
+    assert json.loads(js2)["aux"] == {"priv": 0.25, "jepa": 0.5, "adam_eps": 1e-8} and fp2 != fp
+    for bad in ("0.0", "-1e-8", "inf", "nan"):
+        p.write_text(base + f"adam_eps = {bad}\n", encoding="utf-8")
+        with pytest.raises(Exception, match="041-R23"):
+            _core.bc_config(str(p), "s1")
+    p.write_text(tiny_config.read_text(encoding="utf-8") + "\n[aux]\nadam_eps = 1e-8\n", encoding="utf-8")
+    with pytest.raises(Exception, match="041-R23"):
+        _core.bc_config(str(p), "s1")
 
 
 def test_bc_group_has_the_aux_masks_041_r23(tiny_config, tmp_path):

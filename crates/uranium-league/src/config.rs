@@ -529,6 +529,9 @@ impl RlConfig {
         self.league.start_mix.validate(groups)?;
         if let Some(a) = &self.aux {
             a.check()?;
+            if a.adam_eps.is_some() {
+                bail!("[aux] adam_eps is BC only (041-R23 ⑦): the RL learner refuses it (042-R21)");
+            }
         }
         self.kl.validate()?;
         let cap = self.league.model_game_max_s;

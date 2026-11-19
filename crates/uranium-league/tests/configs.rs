@@ -138,7 +138,7 @@ fn aux_and_monitor_tables_042_r21() {
     let full = include_str!("../../../config/rl.toml").replace("\r\n", "\n");
     let on: RlConfig = toml::from_str(&format!("{full}\n[aux]\npriv = 0.2\njepa = 0.1\n\n[monitor]\nspatial_every = 100\n")).unwrap();
     on.validate().unwrap();
-    assert_eq!(on.aux, Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1) }));
+    assert_eq!(on.aux, Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1), adam_eps: None }));
     assert_eq!(on.monitor, Some(MonitorConfig { spatial_every: 100 }));
     let json = serde_json::to_value(&on).unwrap();
     assert_eq!((json["aux"]["priv"].as_f64().map(|x| x as f32), json["monitor"]["spatial_every"].as_u64()), (Some(0.2), Some(100)));
@@ -152,10 +152,21 @@ fn aux_and_monitor_tables_042_r21() {
 }
 
 #[test]
+fn rl_rejects_aux_adam_eps_042_r21() {
+    let mut t: RlConfig = toml::from_str(include_str!("../../../config/rl_m2.toml")).unwrap();
+    t.aux.as_mut().unwrap().adam_eps = Some(1e-8);
+    let err = format!("{:#}", t.validate().unwrap_err());
+    assert!(err.contains("adam_eps") && err.contains("042-R21"), "{err}");
+    let full = include_str!("../../../config/rl.toml").replace("\r\n", "\n");
+    let c: RlConfig = toml::from_str(&format!("{full}\n[aux]\npriv = 0.2\njepa = 0.1\nadam_eps = 1e-5\n")).unwrap();
+    assert!(c.validate().is_err(), "041-R23 ⑦ is BC only, even at the code default");
+}
+
+#[test]
 fn rl_m2_config_042_r21() {
     let mut t: RlConfig = toml::from_str(include_str!("../../../config/rl_m2.toml")).unwrap();
     t.validate().unwrap();
-    assert_eq!(t.aux, Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1) }), "AMB-041-13b / AMB-042-21");
+    assert_eq!(t.aux, Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1), adam_eps: None }), "AMB-041-13b / AMB-042-21");
     assert_eq!(t.monitor, Some(MonitorConfig { spatial_every: 100 }), "AMB-041-14");
     (t.aux, t.monitor) = (None, None);
     assert_eq!(t, RlConfig::default_file(), "everything else as config/rl.toml");

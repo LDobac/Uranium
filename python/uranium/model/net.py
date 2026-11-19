@@ -334,3 +334,7 @@ class UraniumNet(nn.Module):
 
     def win_open_params(self) -> list[nn.Parameter]:
         return [] if self.value.open is None else list(self.value.open.parameters())
+
+    def aux_params(self) -> list[nn.Parameter]:
+        v = self.variant
+        return [] if v is None else [p for m in (v.aux_priv, v.aux_jepa) if m is not None for p in m.parameters()]

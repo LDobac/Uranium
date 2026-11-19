@@ -770,3 +770,4 @@
 - 10:50 — 끝: B3 2,100판 무효 0 — 계획 6개 모두 걸렸으나(물림 0.36~0.96) 12:00 score 효과 |D| < 0.05(`cc_now` +0.037만 구간 0 밖), `bunker_now` 상대별 방향 차이는 약한 신호(러시 +0.09 · 저그 −0.06, 보정 전 p 0.013), 프로토스 · 테란전은 12:00 무승부 7할 ([branch_b3](report/experiment/2026_11_18_20_36_branch_b3.md))
 - 11:15 — 정정: 11-18 23:40 결정 줄의 시각은 23:27(재표본 23:27~23:29, 결과 확인 11-19 08:52) ([branch_b3](report/experiment/2026_11_18_20_36_branch_b3.md))
 - 11:35 — 결정(사용자)·spec: B3 다음은 30:00 재측정 B3-H(같은 시점 300 · 계획 7, 2,100판, 12:00 score도 다시 계산해 비교) → 055-R13 ([055](spec/2026_11_18_20_30_055-plan-branch-games.md), [branch_b3h](report/experiment/2026_11_19_11_35_branch_b3h.md))
+- 11:36 — 결정(사용자): 보조 예측기만 AdamW eps 1e-8(안 B) — [spec 041](spec/2026_10_15_22_24_041-imitation-learning.md) R3·R23 ⑦·AC8(BC 키 `[aux] adam_eps`, RL은 시작 오류 [042-R21](spec/2026_10_15_22_24_042-rl-training.md)), gn 출발 t2 레시피로 기준 A·B 3,258 update씩, 판정 규칙·게임 평가 없음 ([aux_eps_compare](report/experiment/2026_11_19_11_36_aux_eps_compare.md))

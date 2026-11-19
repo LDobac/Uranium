@@ -56,6 +56,8 @@ pub struct AuxWeights {
     pub privileged: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jepa: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adam_eps: Option<f64>,
 }
 
 impl AuxWeights {
@@ -65,6 +67,9 @@ impl AuxWeights {
             if let Some(x) = v {
                 anyhow::ensure!(x.is_finite() && x >= 0.0, "[aux] {k} must be a finite weight >= 0, got {x} (041-R23)");
             }
+        }
+        if let Some(e) = self.adam_eps {
+            anyhow::ensure!(e.is_finite() && e > 0.0, "[aux] adam_eps must be a finite value > 0, got {e} (041-R23 ⑦)");
         }
         Ok(())
     }

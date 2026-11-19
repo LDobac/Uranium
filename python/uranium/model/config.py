@@ -210,13 +210,14 @@ _SUB = {
 
 
 AUX_KEYS = {"priv": "aux_priv", "jepa": "aux_jepa"}
+AUX_EPS_KEY = "adam_eps"
 
 
 def check_aux(variant: VariantConfig, aux: dict | None) -> dict:
-    aux = {k: v for k, v in (aux or {}).items() if v is not None}
+    aux = {k: v for k, v in (aux or {}).items() if v is not None and k != AUX_EPS_KEY}
     unknown = sorted(set(aux) - set(AUX_KEYS))
     if unknown:
-        raise ValueError(f"[aux]: unknown keys {unknown} (known: {sorted(AUX_KEYS)})")
+        raise ValueError(f"[aux]: unknown keys {unknown} (known: {sorted([*AUX_KEYS, AUX_EPS_KEY])})")
     for key, module in AUX_KEYS.items():
         has = bool(getattr(variant, module))
         if key in aux and not has:
@@ -227,6 +228,17 @@ def check_aux(variant: VariantConfig, aux: dict | None) -> dict:
         if w is not None and not (type(w) in (int, float) and w >= 0 and math.isfinite(w)):
             raise ValueError(f"[aux] {key} = {w!r}: expected a finite weight >= 0")
     return {k: float(v) for k, v in aux.items()}
+
+
+def aux_adam_eps(variant: VariantConfig, aux: dict | None) -> float | None:
+    eps = (aux or {}).get(AUX_EPS_KEY)
+    if eps is None:
+        return None
+    if not (type(eps) in (int, float) and eps > 0 and math.isfinite(eps)):
+        raise ValueError(f"[aux] {AUX_EPS_KEY} = {eps!r}: expected a finite value > 0 (041-R23 ⑦)")
+    if not check_aux(variant, aux):
+        raise ValueError(f"[aux] {AUX_EPS_KEY} is set without priv or jepa (041-R23 ⑦)")
+    return float(eps)
 
 
 def input_dims() -> InputDims:

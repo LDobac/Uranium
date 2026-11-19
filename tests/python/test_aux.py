@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 from uranium import _core, ckpt
-from uranium.bc.trainer import AUX_PARTS, BcTrainer, bc_aux_counts
+from uranium.bc.trainer import ADAM_BETAS, ADAM_EPS, AUX_PARTS, BcTrainer, bc_aux_counts
 from uranium.model import UraniumNet, action_columns, to_labels, to_obs
 from uranium.model.auxiliary import AUX_JEPA_HIDDEN, AUX_PRIV_HIDDEN, jepa_mean, jepa_moments, jepa_std, jepa_sums, priv_sum
 from uranium.model.config import VariantConfig
@@ -18,7 +18,7 @@ from uranium.model.variants import SEED_AUX_PRIV, seed_aux_jepa
 from uranium.rl.learner import HEADS, Learner, rl_aux_counts, state0_of
 from uranium.rl.reference import ReferenceLearner
 
-from testkit import AUX, CPU, KS, WEIGHTS, Segments, bc_cfg, feeder, make_net, net_cfg, params_of, rl_cfg
+from testkit import AUX, CPU, KS, WEIGHTS, Segments, bc_cfg, feeder, make_net, net_cfg, params_of, rl_cfg, tiny_make
 
 FIX = Path(__file__).resolve().parents[1] / "fixtures" / "burn_parity"
 ARCH = dict(terrain=True, ctx_token=True, attn_pool=True, outer=2)
@@ -223,6 +223,82 @@ def test_aux_log_nulls_without_rows_041_r23(tiny_config):
     assert (log["jepa_tgt_std"], log["jepa_tgt_std_raw"]) == (1.0, 2.0)
     st = aux_stats({"priv": 0.2, "jepa": 0.1}, KS, [0.0, 0.5, 0.5, 0.0, 0.0], {"priv": 0, "pairs": [4, 0, 0]}, (1.0, 2.0))
     assert st["aux_priv"] is None and st["aux_jepa"] == 0.5 and st["aux_jepa_slots"] == [0.5, None, None] and st["jepa_tgt_std_raw"] == 2.0
+
+
+EPS_AUX = {"priv": 0.2, "jepa": 0.1}
+
+
+def test_aux_eps_param_groups_041_r3_041_r23(tiny_config):
+    plain = BcTrainer(bc_cfg(tiny_config, aux=EPS_AUX), make_net(AUX), CPU, "f32")
+    (one,) = plain.opt.param_groups
+    assert one["eps"] == ADAM_EPS == 1e-5 and one["betas"] == ADAM_BETAS == (0.9, 0.999) and len(one["params"]) == len(plain.params)
+    assert len(BcTrainer(bc_cfg(tiny_config), make_net(), CPU, "f32").opt.param_groups) == 1
+    tr = BcTrainer(bc_cfg(tiny_config, aux=EPS_AUX | {"adam_eps": 1e-8}), make_net(AUX), CPU, "f32")
+    core, aux = tr.opt.param_groups
+    names = {id(p): n for n, p in tr.net.named_parameters()}
+    want = sorted(n for n in names.values() if n.startswith("variant.aux_"))
+    assert want and sorted(names[id(p)] for p in aux["params"]) == want
+    assert len(core["params"]) + len(aux["params"]) == len(tr.params) and not any(names[id(p)].startswith("variant.aux_") for p in core["params"])
+    assert (core["eps"], aux["eps"]) == (ADAM_EPS, 1e-8)
+    for k in ("lr", "betas", "weight_decay"):
+        assert core[k] == aux[k] == one[k], k
+    with pytest.raises(ValueError, match="041-R23"):
+        BcTrainer(bc_cfg(tiny_config, aux={"adam_eps": 1e-8}), make_net(), CPU, "f32")
+
+
+def test_aux_eps_same_value_bit_identical_041_r23(tiny_config, shards):
+    f = feeder(tiny_config, shards)
+    batches = [f.next() for _ in range(3)]
+    a = BcTrainer(bc_cfg(tiny_config, aux=EPS_AUX), make_net(AUX, dropout=0.1), CPU, "f32")
+    b = BcTrainer(bc_cfg(tiny_config, aux=EPS_AUX | {"adam_eps": ADAM_EPS}), make_net(AUX, dropout=0.1), CPU, "f32")
+    assert (len(a.opt.param_groups), len(b.opt.param_groups)) == (1, 2)
+    for s, x in enumerate(batches):
+        assert a.train_batch(x, 3e-3, s) == b.train_batch(x, 3e-3, s)
+    pa, pb = params_of(a.net), params_of(b.net)
+    assert all(torch.equal(pa[k], pb[k]) for k in pa)
+
+
+def test_aux_eps_changes_only_aux_041_r23(tiny_config, shards):
+    b = feeder(tiny_config, shards).next()
+    runs = {}
+    for eps in (None, 1e-8):
+        tr = BcTrainer(bc_cfg(tiny_config, aux=EPS_AUX if eps is None else EPS_AUX | {"adam_eps": eps}), make_net(AUX), CPU, "f32")
+        log = json.loads(tr.train_batch(b, 3e-3, 0))
+        runs[eps] = (params_of(tr.net), log)
+    (p0, l0), (p1, l1) = runs[None], runs[1e-8]
+    assert l0 == l1
+    aux = [k for k in p0 if k.startswith("variant.aux_")]
+    assert aux and all(torch.equal(p0[k], p1[k]) for k in p0 if k not in aux)
+    assert any(not torch.equal(p0[k], p1[k]) for k in aux)
+
+
+def test_aux_eps_optimizer_roundtrip_041_r23(tiny_config, shards, tmp_path):
+    cfg = bc_cfg(tiny_config, aux=EPS_AUX | {"adam_eps": 1e-8})
+    a = BcTrainer(cfg, make_net(AUX), CPU, "f32")
+    fa = feeder(tiny_config, shards)
+    for s in range(2):
+        b = fa.next()
+        a.train_batch(b, 3e-3, s)
+    state = b.state_json()
+    a.save(str(tmp_path / "ck"), json.dumps({"step": 2}))
+    a.states = []
+    kept = [a.train_batch(fa.next(), 3e-3, s) for s in (2, 3)]
+    r = tiny_make(AUX, None, json.dumps(cfg), "resume", str(tmp_path / "ck"), 0)
+    assert [g["eps"] for g in r.opt.param_groups] == [ADAM_EPS, 1e-8]
+    fb = feeder(tiny_config, shards, restore=state)
+    assert [r.train_batch(fb.next(), 3e-3, s) for s in (2, 3)] == kept
+    pa, pr = params_of(a.net), params_of(r.net)
+    assert all(torch.equal(pa[k], pr[k]) for k in pa)
+
+
+def test_rl_refuses_aux_adam_eps_042_r21(tmp_path):
+    with pytest.raises(ValueError, match="042-R21"):
+        Learner(rl_cfg(aux=EPS_AUX | {"adam_eps": 1e-8}), make_net(AUX), make_net(AUX), CPU, "f32", "vtrace")
+    p = tmp_path / "rl.toml"
+    p.write_text((Path(__file__).resolve().parents[2] / "config" / "rl_m2.toml").read_text(encoding="utf-8").replace("[aux]\n", "[aux]\nadam_eps = 1e-8\n"), encoding="utf-8")
+    assert "adam_eps" in p.read_text(encoding="utf-8")
+    with pytest.raises(Exception, match="042-R21"):
+        _core.rl_config(str(p))
 
 
 @pytest.mark.parametrize("variant", [None, AUX], ids=["plain", "aux"])

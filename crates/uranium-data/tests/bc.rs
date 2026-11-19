@@ -920,7 +920,7 @@ fn config_fingerprint_fields_are_classified_b3() {
     assert!(json.get("aux").is_none() && json.get("monitor").is_none() && json.get("train").is_none(), "041-R23 / R24 / R25: absent tables stay out of the config JSON");
     cfg.keep_checkpoints = Some(3);
     cfg.data.subsample = Some(uranium_data::split::Subsample { fraction: 0.25, keep_sources: vec!["botgen".into()], fraction_by_race: None, fraction_by_source: None });
-    cfg.aux = Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1) });
+    cfg.aux = Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1), adam_eps: None });
     cfg.monitor = Some(MonitorConfig { spatial_every: 100 });
     cfg.train = Some(TrainSettings { model_seed: Some(1) });
     cfg.data.chain_start_sources = Some(vec!["botgen".into()]);
@@ -1019,7 +1019,7 @@ fn checkpoint1_fingerprint_unchanged_041_ac6() {
     assert_eq!(mon.monitor, Some(MonitorConfig { spatial_every: 100 }));
     assert_eq!(mon.fingerprint(), want, "041-R25: [monitor] is not in the fingerprint");
     let aux = with("[aux]\npriv = 0.2\njepa = 0.1");
-    assert_eq!(aux.aux, Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1) }));
+    assert_eq!(aux.aux, Some(AuxWeights { privileged: Some(0.2), jepa: Some(0.1), adam_eps: None }));
     assert_ne!(aux.fingerprint(), want, "041-R23: [aux] is in the fingerprint");
     let json = serde_json::to_value(&aux).unwrap();
     assert_eq!(json["aux"], serde_json::json!({ "priv": 0.2f32, "jepa": 0.1f32 }), "the Python trainer reads [aux] priv / jepa");
@@ -1027,17 +1027,100 @@ fn checkpoint1_fingerprint_unchanged_041_ac6() {
 
 #[test]
 fn aux_and_monitor_tables_are_checked_041_r23() {
-    assert!(AuxWeights { privileged: Some(-0.1), jepa: None }.check().is_err());
-    assert!(AuxWeights { privileged: None, jepa: Some(f32::NAN) }.check().is_err());
-    assert!(AuxWeights { privileged: Some(0.0), jepa: Some(0.1) }.check().is_ok());
+    assert!(AuxWeights { privileged: Some(-0.1), jepa: None, adam_eps: None }.check().is_err());
+    assert!(AuxWeights { privileged: None, jepa: Some(f32::NAN), adam_eps: None }.check().is_err());
+    assert!(AuxWeights { privileged: Some(0.0), jepa: Some(0.1), adam_eps: None }.check().is_ok());
     assert!(AuxWeights::default().check().is_err(), "an empty [aux] table would change the fingerprint only");
     assert!(toml::from_str::<AuxWeights>("prv = 0.2").is_err());
     assert!(toml::from_str::<MonitorConfig>("spatial = 100").is_err());
     assert!(toml::from_str::<TrainSettings>("seed = 1").is_err());
     assert!(TrainSettings::default().check().is_err());
     assert_eq!(toml::from_str::<TrainSettings>("model_seed = 2").unwrap(), TrainSettings { model_seed: Some(2) });
-    assert_eq!(toml::from_str::<AuxWeights>("priv = 0.2").unwrap(), AuxWeights { privileged: Some(0.2), jepa: None });
+    assert_eq!(toml::from_str::<AuxWeights>("priv = 0.2").unwrap(), AuxWeights { privileged: Some(0.2), jepa: None, adam_eps: None });
     assert_eq!(toml::from_str::<MonitorConfig>("").unwrap(), MonitorConfig { spatial_every: 0 });
+}
+
+fn repo_root() -> std::path::PathBuf {
+    std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).to_path_buf()
+}
+
+#[test]
+fn aux_adam_eps_absent_keeps_fingerprint_041_r23() {
+    use uranium_data::bc::BcStage;
+    let root = repo_root();
+    let ck2 = root.join("releases/checkpoint-2");
+    let cfg = BcConfig::load(&ck2.join("config/bc_m2_teacher_t1.toml")).unwrap().for_stage(BcStage::S2);
+    let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(ck2.join("train_state.json")).unwrap()).unwrap();
+    assert!(cfg.aux.is_some());
+    assert_eq!(cfg.fingerprint(), state["extra"]["run"]["config"].as_str().unwrap(), "041-AC8 ①: an [aux] table without adam_eps keeps the Checkpoint 2 fingerprint");
+    let mut seen = 0;
+    for e in std::fs::read_dir(root.join("config")).unwrap().flatten() {
+        let p = e.path();
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        if !name.starts_with("bc") || p.extension().is_none_or(|x| x != "toml") || name == "bc_m2_aux_eps_b.toml" {
+            continue;
+        }
+        let c = match BcConfig::load(&p) {
+            Ok(c) => c,
+            Err(err) => {
+                assert!(std::fs::read_to_string(&p).unwrap().contains("PLACEHOLDER"), "{}: {err:#}", p.display());
+                continue;
+            }
+        };
+        assert!(c.aux.as_ref().is_none_or(|a| a.adam_eps.is_none()), "{}", p.display());
+        for json in [serde_json::to_value(&c).unwrap(), serde_json::to_value(c.results_view()).unwrap()] {
+            if let Some(a) = json.get("aux") {
+                assert!(a.as_object().unwrap().keys().all(|k| k == "priv" || k == "jepa"), "{}: {a}", p.display());
+            }
+        }
+        seen += 1;
+    }
+    assert!(seen > 10);
+}
+
+#[test]
+fn aux_adam_eps_in_fingerprint_041_r23() {
+    let root = repo_root();
+    let t2 = BcConfig::load(&root.join("config/bc_m2_teacher_t2.toml")).unwrap();
+    let b = BcConfig::load(&root.join("config/bc_m2_aux_eps_b.toml")).unwrap();
+    assert_eq!(b.aux.as_ref().unwrap().adam_eps, Some(1e-8));
+    assert_ne!(b.fingerprint(), t2.fingerprint());
+    assert_eq!(serde_json::to_value(&b).unwrap()["aux"]["adam_eps"].as_f64(), Some(1e-8), "the Python trainer reads [aux] adam_eps");
+    assert_eq!(serde_json::to_value(b.results_view()).unwrap()["aux"]["adam_eps"].as_f64(), Some(1e-8));
+    let mut back = b.clone();
+    back.aux.as_mut().unwrap().adam_eps = None;
+    assert_eq!(back, t2, "bc_m2_aux_eps_b.toml = bc_m2_teacher_t2.toml + [aux] adam_eps");
+    assert_eq!(back.fingerprint(), t2.fingerprint());
+    let mut same = t2.clone();
+    same.aux.as_mut().unwrap().adam_eps = Some(1e-5);
+    assert_ne!(same.fingerprint(), t2.fingerprint(), "a set key is in the fingerprint");
+}
+
+#[test]
+fn aux_adam_eps_rejects_bad_values_041_r23() {
+    let aux = |e: f64| AuxWeights { privileged: Some(0.2), jepa: Some(0.1), adam_eps: Some(e) };
+    for e in [0.0, -1e-8, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+        assert!(aux(e).check().is_err(), "{e}");
+    }
+    assert!(aux(1e-8).check().is_ok());
+    assert!(AuxWeights { privileged: None, jepa: None, adam_eps: Some(1e-8) }.check().is_err(), "adam_eps alone");
+    assert!(toml::from_str::<AuxWeights>("priv = 0.2\nadam_eps = \"1e-8\"").is_err());
+    let root = repo_root();
+    let t2 = std::fs::read_to_string(root.join("config/bc_m2_teacher_t2.toml")).unwrap().replace("\r\n", "\n");
+    let plain = std::fs::read_to_string(root.join("releases/checkpoint-1/config/bc_dagger_r1.toml")).unwrap().replace("\r\n", "\n");
+    assert!(t2.trim_end().ends_with("jepa = 0.1") && !plain.contains("[aux]"));
+    let load = |text: String, tag: usize| {
+        let path = std::env::temp_dir().join(format!("uranium-041-r23-eps-{}-{tag}.toml", std::process::id()));
+        std::fs::write(&path, text).unwrap();
+        let r = BcConfig::load(&path);
+        std::fs::remove_file(&path).ok();
+        r
+    };
+    assert!(load(format!("{t2}adam_eps = 1e-8\n"), 0).is_ok());
+    for (i, e) in ["0.0", "-1e-8", "inf", "nan"].iter().enumerate() {
+        assert!(load(format!("{t2}adam_eps = {e}\n"), i + 1).is_err(), "{e}");
+    }
+    assert!(load(format!("{plain}\n[aux]\nadam_eps = 1e-8\n"), 9).is_err(), "041-AC8 ⑤: [aux] with adam_eps only");
 }
 
 #[test]
