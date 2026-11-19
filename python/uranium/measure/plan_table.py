@@ -24,14 +24,12 @@ Z80 = 2.80
 FPS = bc.FPS
 
 
-SCORE_AT: list[int | None] = [None]
-
-
-def score_of(row: dict) -> float:
+def score_of(row: dict, score_at: int | None = None) -> float:
     s = row["score"] if "score" in row else collect_score(row.get("labels") or {"_": 0}, row.get("end"))
-    if s is not None and SCORE_AT[0] is not None:
+    if s is not None and score_at is not None:
         end = row.get("end") or {}
-        s = collect_score(row.get("labels") or {"_": 0}, {**end, "before_horizon": int(end.get("end_frame") or 0) < SCORE_AT[0]})
+        f = end.get("end_frame")
+        s = None if f is None else collect_score(row.get("labels") or {"_": 0}, {**end, "before_horizon": int(f) < score_at})
     return float("nan") if s is None else float(s)
 
 
@@ -47,9 +45,9 @@ def own_of(row: dict, sample: str) -> np.ndarray | None:
     return cache[sample]
 
 
-def value(row: dict, name: str) -> float:
+def value(row: dict, name: str, score_at: int | None = None) -> float:
     if name == "score":
-        return score_of(row)
+        return score_of(row, score_at)
     if name.startswith("own@"):
         sample, _, col = name[4:].partition(":")
         o = own_of(row, sample)
@@ -90,8 +88,9 @@ def mean_finite(v) -> float:
 
 
 class Table:
-    def __init__(self, points: list[dict], rows: list[dict], baseline: str = "none", one_rule_list: bool = True):
+    def __init__(self, points: list[dict], rows: list[dict], baseline: str = "none", one_rule_list: bool = True, score_at: int | None = None):
         self.baseline = baseline
+        self.score_at = score_at
         valid = {p["point"]: p for p in points if p.get("valid", True)}
         self.invalid: dict[str, dict[str, int]] = {}
         self.games: dict[str, int] = {}
@@ -130,7 +129,7 @@ class Table:
         return self.cells.get((p, a), [])
 
     def means(self, a: str, y: str) -> np.ndarray:
-        return np.array([mean_finite([value(r, y) for r in self.rows(p, a)]) for p in self.points])
+        return np.array([mean_finite([value(r, y, self.score_at) for r in self.rows(p, a)]) for p in self.points])
 
     def d(self, a: str, y: str) -> np.ndarray:
         return self.means(a, y) - self.means(self.baseline, y)
@@ -287,14 +286,16 @@ def drift(T: Table, other: Table, outcomes: tuple[str, ...], n: int, seed: int) 
 
 
 def analyse(job: Path, compare: Path | None, n: int = 2000, seed: int = 7, splits: int = 200, split_seed: int = 7,
-            horizon: int = 17280, baseline: str = "none") -> dict:
-    T = Table(bc.read_jsonl(job / "points.jsonl"), bc.read_jsonl(job / "branches.jsonl"), baseline)
+            horizon: int = 17280, baseline: str = "none", score_at: int | None = None) -> dict:
+    if score_at is not None and not 0 < score_at <= horizon:
+        raise bc.Refused(f"--score-at {score_at} must be in (0, horizon {horizon}] (055-R13)")
+    T = Table(bc.read_jsonl(job / "points.jsonl"), bc.read_jsonl(job / "branches.jsonl"), baseline, score_at=score_at)
     if baseline not in T.rules:
         raise bc.Refused(f"{job}: no {baseline} branch")
     own = [f"own@{s}:{c}" for s in OWN_SAMPLES for c in OWN_COLS]
     inv = sum(sum(v.values()) for v in T.invalid.values())
     rep: dict = {"kind": "plan-table", "job": str(job.name), "settings": {"boot": n, "boot_seed": seed, "splits": splits, "split_seed": split_seed,
-                                                                         "horizon": horizon, "baseline": baseline},
+                                                                         "horizon": horizon, "baseline": baseline, "score_at": score_at},
                  "games": T.n_rows, "valid": T.n_valid, "invalid": inv, "invalid_rate": inv / T.n_rows if T.n_rows else None,
                  "invalid_by_alt": T.invalid, "games_by_alt": T.games, "outside_points": T.outside,
                  "points": len(T.points), "trunks": int(len(set(T.trunk))), "none_repeats_max": T.none_repeats, "cells": {c: int((T.cell == c).sum()) for c in T.cell_names},
@@ -317,7 +318,7 @@ def analyse(job: Path, compare: Path | None, n: int = 2000, seed: int = 7, split
     for a in T.plans:
         rep["bite"][a] = bite(T, a, horizon, n, seed, ("score",))
     if compare is not None:
-        other = Table(bc.read_jsonl(compare / "points.jsonl"), bc.read_jsonl(compare / "branches.jsonl"), baseline, one_rule_list=False)
+        other = Table(bc.read_jsonl(compare / "points.jsonl"), bc.read_jsonl(compare / "branches.jsonl"), baseline, one_rule_list=False, score_at=score_at)
         rep["drift"] = {"compare": str(compare.name), **drift(T, other, DRIFT_OUTCOMES, n, seed)}
     return rep
 
@@ -338,7 +339,7 @@ def markdown(rep: dict) -> str:
     inv = "-" if rep["invalid_rate"] is None else f"{rep['invalid_rate'] * 100:.2f}%"
     L = ["# 계획 분기 표 (055-R7)", "",
          f"- job `{rep['job']}`: 분기 {rep['games']}(유효 {rep['valid']}, 무효 {rep['invalid']} = {inv}), 시점 {rep['points']}, 줄기 {rep['trunks']}, 층 {json.dumps(rep['cells'])}",
-         *([f"- score: {rep['score_at']} 프레임 시점(그때까지 안 끝난 판은 무, 055-R13)"] if rep.get("score_at") is not None else []),
+         *([f"- score: {rep['settings']['score_at']} 프레임 시점(그때까지 안 끝난 판은 무, 055-R13)"] if rep["settings"].get("score_at") is not None else []),
          f"- 구간: 줄기 bootstrap {rep['settings']['boot']}회(seed {rep['settings']['boot_seed']}, 95%), 최소 검출 효과 = 2.80 × SE, 판정 문턱 없음(055-R12)", "",
          "## 1. 계획 효과 D (계획 − none)", "", "| 결과 | none | " + " | ".join(plans) + " |", "|---|---|" + "---|" * len(plans)]
     for y, ent in rep["effects"].items():
@@ -423,9 +424,7 @@ def main(argv=None) -> None:
         root = Path(".") if exists and not a.root else bc.shared_root(a.root)
         job = bc.job_dir(a.job, root)
         compare = None if a.compare is None else bc.job_dir(a.compare, root)
-        SCORE_AT[0] = a.score_at
-        rep = analyse(job, compare, a.boot, a.boot_seed, a.splits, a.split_seed, a.horizon)
-        rep["score_at"] = a.score_at
+        rep = analyse(job, compare, a.boot, a.boot_seed, a.splits, a.split_seed, a.horizon, score_at=a.score_at)
     except bc.Refused as e:
         raise SystemExit(f"REFUSED: {e}") from e
     out = Path(a.out) if a.out else job / "analysis"

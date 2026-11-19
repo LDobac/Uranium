@@ -631,7 +631,7 @@ def test_b3h_longer_horizon_on_b2_trunks_055_r13(tmp_path):
     assert (out / "points.jsonl").read_bytes() == (b3out / "points.jsonl").read_bytes(), "same points as B3"
     plan = tomllib.loads((out / "plans" / "branch-b3h.toml").read_text(encoding="utf-8"))
     assert plan["max_frames"] == 43248
-    assert bc.read_jsonl(out / "plans" / "branches_plan.jsonl")[0]["alt"] == bc.read_jsonl(b3out / "plans" / "branches_plan.jsonl")[0]["alt"]
+    assert (out / "plans" / "branches_plan.jsonl").read_bytes() == (b3out / "plans" / "branches_plan.jsonl").read_bytes()
     assert "max_frames = 17328" in bp.render_trunk("t", b3h, [])
     text = B3H.read_text(encoding="utf-8")
     for bad in ("trunk_horizon = 50000", "trunk_horizon = true", "trunk_horizon = 0"):

@@ -156,21 +156,18 @@ def test_drift_against_earlier_none_055_r7(tmp_path):
 
 def test_score_at_frame_055_r13(tmp_path):
     row = lambda f, r="win": {"score": 1.0, "end": {"result": r, "end_frame": f, "before_horizon": True}, "labels": {"held_8m": 1}}
-    try:
-        pt.SCORE_AT[0] = 17280
-        assert pt.score_of(row(17000)) == 1.0
-        assert pt.score_of(row(17280)) == 0.5, "not over by 12:00"
-        assert pt.score_of(row(9000, "loss")) == 0.0
-        assert math.isnan(pt.score_of({"score": None, "end": {"result": "win", "end_frame": 100}, "labels": {"held_8m": None}})), "Aborted stays none"
-    finally:
-        pt.SCORE_AT[0] = None
+    assert pt.score_of(row(17000), 17280) == 1.0
+    assert pt.score_of(row(17280), 17280) == 0.5, "not over by 12:00"
+    assert pt.score_of(row(9000, "loss"), 17280) == 0.0
+    assert math.isnan(pt.score_of({"score": None, "end": {"result": "win", "end_frame": 100}, "labels": {"held_8m": None}}, 17280)), "Aborted stays none"
+    assert math.isnan(pt.score_of({"score": 1.0, "end": {"result": "win"}, "labels": {"held_8m": 1}}, 17280)), "no end frame"
     assert pt.score_of(row(17280)) == 1.0
     job = write(tmp_path, "b3h", *dataset())
     pt.main(["--job", str(job), "--boot", "50", "--splits", "5", "--score-at", "17280"])
     out = json.loads((job / "analysis" / "plan-table.json").read_text(encoding="utf-8"))
-    assert out["score_at"] == 17280 and "17280 프레임 시점" in (job / "analysis" / "plan-table.md").read_text(encoding="utf-8")
-    pt.main(["--job", str(job), "--boot", "50", "--splits", "5"])
-    assert pt.SCORE_AT[0] is None
+    assert out["settings"]["score_at"] == 17280 and "17280 프레임 시점" in (job / "analysis" / "plan-table.md").read_text(encoding="utf-8")
+    with pytest.raises(SystemExit, match="score-at"):
+        pt.main(["--job", str(job), "--boot", "50", "--splits", "5", "--score-at", "20000"])
 
 
 def test_cli_writes_table_055_r7(tmp_path):
