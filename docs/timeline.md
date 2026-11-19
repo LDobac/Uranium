@@ -775,3 +775,9 @@
 - 18:44 — 끝: 보조 예측기 eps 비교 — B는 주 손실 그대로, val500 `aux_jepa` −47%(A 0.0410 → B 0.0216)이나 JEPA 정답 흩어짐도 −30%(상수 예측 바닥 대비 A 0.40 · B 0.45), `aux_priv` −4% ([aux_eps_compare](report/experiment/2026_11_19_11_36_aux_eps_compare.md))
 - 19:07 — 결정(사용자): 계획 갈래 판 측정 멈춤(줄기 확장 AMB-055-1 · 예측기 055-R8 안 함, seed 블록 AMB-055-2는 정하지 않음) · 보조 eps 안 B 보류(기본 eps 1e-5 유지) ([055](spec/2026_11_18_20_30_055-plan-branch-games.md), [branch_b3h](report/experiment/2026_11_19_11_35_branch_b3h.md), [aux_eps_compare](report/experiment/2026_11_19_11_36_aux_eps_compare.md))
 - 19:22 — 마무리(사용자 요청): 계획형 JEPA 결과 정리(단계별 결과 · 예상 대조 · 결론 · 산출물) · 모델 2 리포트 11-17~11-19 요약 ([jepa_planning](report/plan/2026_11_11_14_56_jepa_planning.md) 11절, [model2](report/plan/2026_11_09_22_18_model2.md) 13절)
+- 22:2x — 결정(사용자): 모델 확대 후보 B로 t2 줄기만 같은 단계 · 데이터 · update 수로 다시 학습해 Checkpoint 1 · 2 · t2와 비교(GroupNorm 처음부터 · gn 두 단계 유지, BC 2배 느려짐 조사 먼저) → 22:3x 사용자 지시로 멈춤, 코드 · spec 변경 없음 ([model_scaleup](report/bench/2026_11_17_21_45_model_scaleup.md))
+- 22:4x — 결정(사용자): 공간 인코더(CNN)를 linear projection으로 바꾸는 안 검토 — 학습 없는 지워 보기 측정 먼저, B 줄기는 공간 구조를 정한 뒤로 ([spatial_ablation](report/investigation/2026_11_19_23_00_spatial_ablation.md))
+- 23:01 — 시작: 지워 보기 측정(t2, val 전체 2,395판, Windows CUDA 호스트 f32) ([spatial_ablation](report/investigation/2026_11_19_23_00_spatial_ablation.md))
+
+## 2026-11-20
+- 07:36 — 끝 · 새 리포트: 요약 `s_pool` → Core는 정보가 안 쓰임(평균 · 섞기 차이 ≤ 0.0004 NLL/머리, 상수 바이어스만), 위치 머리는 CNN 특징에 크게 의존(지우면 위치 NLL 5.46 → 8.02, 4칸 안 0.49 → 0.07, 건물 배치 정확 칸 0.25 → 0.05) ([spatial_ablation](report/investigation/2026_11_19_23_00_spatial_ablation.md))
