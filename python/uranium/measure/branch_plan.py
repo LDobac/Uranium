@@ -64,6 +64,9 @@ def load_config(path: Path) -> dict:
                 raise Refused(f"{path}: alternative {a['name']}: NoOp cannot be banned (051-R7 ③)")
     if int(cfg["horizon"]) <= 0 or int(cfg["repeats"]) < 1:
         raise Refused(f"{path}: horizon > 0 and repeats >= 1")
+    th = cfg.get("trunk_horizon", cfg["horizon"])
+    if not isinstance(th, int) or isinstance(th, bool) or not 0 < th <= int(cfg["horizon"]):
+        raise Refused(f"{path}: trunk_horizon is an integer in (0, horizon] (055-R13)")
     if is_mix(cfg):
         t = cfg["trunks"]
         if set(t) != MIX_KEYS or int(t["games"]) < 1 or not t["maps"] or not t["opponents"]:
@@ -137,6 +140,10 @@ def max_frames(cfg: dict) -> int:
     return int(cfg["horizon"]) + bc.HORIZON_MARGIN
 
 
+def trunk_horizon(cfg: dict) -> int:
+    return int(cfg.get("trunk_horizon", cfg["horizon"]))
+
+
 def rush_blocks(cfg: dict) -> dict[str, list[int]]:
     t = cfg["trunks"]
     plan = tomllib.loads((bc.ROOT / t["rush_plan"]).read_text(encoding="utf-8"))
@@ -166,12 +173,12 @@ def pick_seeds(seeds: list[int], counts: dict[str, int], cond, exclude: set[int]
     return out
 
 
-def plan_head(name: str, cfg: dict) -> list[str]:
+def plan_head(name: str, cfg: dict, frames: int | None = None) -> list[str]:
     return [f"name = {bc.toml_value(name)}",
             "save_replay = true",
             "zero_last_failed = true",
             'surrender = "off"',
-            f"max_frames = {max_frames(cfg)}",
+            f"max_frames = {max_frames(cfg) if frames is None else frames}",
             f"wall_timeout_s = {int(cfg.get('wall_timeout_s', 7200))}",
             "act_log = true"]
 
@@ -203,7 +210,7 @@ def snapshot_tables(cfg: dict) -> list[str]:
 def render_trunk(name: str, cfg: dict, blocks: list[tuple[str, dict, list[int]]]) -> str:
     p0 = {"kind": "model", "checkpoint": cfg["checkpoint"], "sample": "stochastic"}
     seeds, matchups = seeds_and_matchups(blocks, p0)
-    return "\n".join([*plan_head(name, cfg), *seeds, *snapshot_tables(cfg), *matchups]) + "\n"
+    return "\n".join([*plan_head(name, cfg, trunk_horizon(cfg) + bc.HORIZON_MARGIN), *seeds, *snapshot_tables(cfg), *matchups]) + "\n"
 
 
 def job_stages(job: Path) -> list:
@@ -295,7 +302,7 @@ def norm_rule(s: dict) -> dict:
 
 def read_trunks(a, cfg: dict, root: Path, job: Path, expect: dict) -> list[Trunk]:
     rules = [s["name"] for s in cfg["snapshots"]]
-    horizon = int(cfg["horizon"])
+    horizon = trunk_horizon(cfg)
     stages = {plan["name"]: (k, f, plan) for k, f, plan in job_stages(job)}
     sha_cache: dict[str, str | None] = {}
     out = []
@@ -307,8 +314,8 @@ def read_trunks(a, cfg: dict, root: Path, job: Path, expect: dict) -> list[Trunk
         have = [norm_rule(s) for s in plan.get("snapshots", [])]
         if have != want:
             raise Refused(f"stage {stage}: its [[snapshots]] are not the config's (051-R11 1)")
-        if int(plan.get("max_frames", 86_400)) != max_frames(cfg):
-            raise Refused(f"stage {stage}: max_frames {plan.get('max_frames')} is not H + 48 = {max_frames(cfg)} (051-R1)")
+        if int(plan.get("max_frames", 86_400)) != horizon + bc.HORIZON_MARGIN:
+            raise Refused(f"stage {stage}: max_frames {plan.get('max_frames')} is not trunk H + 48 = {horizon + bc.HORIZON_MARGIN} (051-R1, 055-R13)")
         sd = job / stage
         games = {int(g["game_id"]): g for g in merged(sd, "games")}
         recs: dict[int, list[dict]] = {}

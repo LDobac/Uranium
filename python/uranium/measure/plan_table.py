@@ -24,8 +24,14 @@ Z80 = 2.80
 FPS = bc.FPS
 
 
+SCORE_AT: list[int | None] = [None]
+
+
 def score_of(row: dict) -> float:
     s = row["score"] if "score" in row else collect_score(row.get("labels") or {"_": 0}, row.get("end"))
+    if s is not None and SCORE_AT[0] is not None:
+        end = row.get("end") or {}
+        s = collect_score(row.get("labels") or {"_": 0}, {**end, "before_horizon": int(end.get("end_frame") or 0) < SCORE_AT[0]})
     return float("nan") if s is None else float(s)
 
 
@@ -332,6 +338,7 @@ def markdown(rep: dict) -> str:
     inv = "-" if rep["invalid_rate"] is None else f"{rep['invalid_rate'] * 100:.2f}%"
     L = ["# 계획 분기 표 (055-R7)", "",
          f"- job `{rep['job']}`: 분기 {rep['games']}(유효 {rep['valid']}, 무효 {rep['invalid']} = {inv}), 시점 {rep['points']}, 줄기 {rep['trunks']}, 층 {json.dumps(rep['cells'])}",
+         *([f"- score: {rep['score_at']} 프레임 시점(그때까지 안 끝난 판은 무, 055-R13)"] if rep.get("score_at") is not None else []),
          f"- 구간: 줄기 bootstrap {rep['settings']['boot']}회(seed {rep['settings']['boot_seed']}, 95%), 최소 검출 효과 = 2.80 × SE, 판정 문턱 없음(055-R12)", "",
          "## 1. 계획 효과 D (계획 − none)", "", "| 결과 | none | " + " | ".join(plans) + " |", "|---|---|" + "---|" * len(plans)]
     for y, ent in rep["effects"].items():
@@ -409,13 +416,16 @@ def main(argv=None) -> None:
     ap.add_argument("--splits", type=int, default=200)
     ap.add_argument("--split-seed", type=int, default=7)
     ap.add_argument("--horizon", type=int, default=17280, help="horizon frame H; a rule action never picked counts as H")
+    ap.add_argument("--score-at", type=int, default=None, help="score as of this frame from the end record: a game not over by then is a draw (055-R13)")
     a = ap.parse_args(argv)
     try:
         exists = all(x is None or Path(x).exists() for x in (a.job, a.compare))
         root = Path(".") if exists and not a.root else bc.shared_root(a.root)
         job = bc.job_dir(a.job, root)
         compare = None if a.compare is None else bc.job_dir(a.compare, root)
+        SCORE_AT[0] = a.score_at
         rep = analyse(job, compare, a.boot, a.boot_seed, a.splits, a.split_seed, a.horizon)
+        rep["score_at"] = a.score_at
     except bc.Refused as e:
         raise SystemExit(f"REFUSED: {e}") from e
     out = Path(a.out) if a.out else job / "analysis"

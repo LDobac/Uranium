@@ -616,6 +616,35 @@ def test_b3_config_reuses_b2_trunks_055_r2_r3(tmp_path):
         assert (out / f).read_bytes() == (again / f).read_bytes(), f
 
 
+B3H = ROOT / "config" / "branch_b3h.toml"
+
+
+def test_b3h_longer_horizon_on_b2_trunks_055_r13(tmp_path):
+    b3, b3h = bp.load_config(B3), bp.load_config(B3H)
+    assert {k: v for k, v in b3h.items() if k not in ("name", "horizon", "trunk_horizon")} == {k: v for k, v in b3.items() if k not in ("name", "horizon")}
+    assert (b3h["name"], b3h["horizon"], b3h["trunk_horizon"]) == ("branch-b3h", 43200, b3["horizon"])
+    tj = MixTrunkJob(tmp_path)
+    out, b3out = tmp_path / "eval" / "b3h", tmp_path / "eval" / "b3"
+    s = bp.build(args(tj, out, config=B3H, stage=["b2-trunk"], hit=None, miss=None, games=None, hosts="hosts.toml"))
+    bp.build(b3_args(tj, b3out, hosts="hosts.toml"))
+    assert s["games"] == 4 * 3 * 7 and s["dropped"] == []
+    assert (out / "points.jsonl").read_bytes() == (b3out / "points.jsonl").read_bytes(), "same points as B3"
+    plan = tomllib.loads((out / "plans" / "branch-b3h.toml").read_text(encoding="utf-8"))
+    assert plan["max_frames"] == 43248
+    assert bc.read_jsonl(out / "plans" / "branches_plan.jsonl")[0]["alt"] == bc.read_jsonl(b3out / "plans" / "branches_plan.jsonl")[0]["alt"]
+    assert "max_frames = 17328" in bp.render_trunk("t", b3h, [])
+    text = B3H.read_text(encoding="utf-8")
+    for bad in ("trunk_horizon = 50000", "trunk_horizon = true", "trunk_horizon = 0"):
+        cfg = tmp_path / "bad.toml"
+        cfg.write_text(text.replace("trunk_horizon = 17280", bad), encoding="utf-8")
+        with pytest.raises(bc.Refused, match="trunk_horizon"):
+            bp.load_config(cfg)
+    cfg = tmp_path / "no_trunk_h.toml"
+    cfg.write_text(text.replace("trunk_horizon = 17280\n", ""), encoding="utf-8")
+    with pytest.raises(bc.Refused, match="max_frames"):
+        bp.build(args(tj, tmp_path / "eval" / "x", config=cfg, stage=["b2-trunk"], hit=None, miss=None, games=None))
+
+
 def test_b3_collect_score_055_r6(tmp_path):
     tj = MixTrunkJob(tmp_path, games=2)
     out = tmp_path / "eval" / "b3"
