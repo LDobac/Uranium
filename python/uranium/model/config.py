@@ -308,7 +308,8 @@ def _net_value(name: str, want, v):
 
 
 def net_sizes_from_table(table: dict | None) -> dict:
-    table = table or {}
+    if table is None:
+        return {}
     if not isinstance(table, dict):
         raise ValueError(f"[net] = {table!r}: expected a table of sub-tables (032-R28)")
     out = {}

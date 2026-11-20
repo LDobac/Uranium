@@ -146,7 +146,7 @@ class ReluMonitor:
     def __init__(self, net, inner: bool = True, points: str = "spatial", threshold: float = CONST_THRESHOLD):
         if points not in POINTS:
             raise ValueError(f"points {points!r}: expected one of {POINTS}")
-        if points == "spatial" and getattr(net, "patch", 0):
+        if points == "spatial" and net.patch:
             raise ValueError("the patch spatial path has no spatial encoder statistics (032-R25, 032-R29 ⑤)")
         self.net = net
         self.inner = inner

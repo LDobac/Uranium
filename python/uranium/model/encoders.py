@@ -226,7 +226,7 @@ def scatter_mean(lin: nn.Module, obs: dict, e, h: int, w: int):
 
 def patchify(x, p: int):
     b, c, h, w = x.shape
-    return x.view(b, c, h // p, p, w // p, p).permute(0, 2, 4, 1, 3, 5).reshape(b, (h // p) * (w // p), c * p * p)
+    return x.reshape(b, c, h // p, p, w // p, p).permute(0, 2, 4, 1, 3, 5).reshape(b, (h // p) * (w // p), c * p * p)
 
 
 def unpatchify(y, p: int, side: int):
@@ -238,8 +238,6 @@ def unpatchify(y, p: int, side: int):
 class PatchEncoder(nn.Module):
     def __init__(self, inp: InputDims, c: SpatialConfig, d_entity: int, patch: int):
         super().__init__()
-        if inp.map_size % patch:
-            raise ValueError(f"[model] spatial_patch = {patch} does not divide the map side {inp.map_size} (032-R29 ②)")
         self.scatter = Linear(d_entity, c.scatter_channels)
         n = (inp.map_size // patch) ** 2
         with torch.random.fork_rng(devices=[]):

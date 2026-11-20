@@ -14,7 +14,7 @@ from uranium.clip import clip_global_norm
 from uranium.device import adam_impl, autocast, compile_graphs, compiled, impl_settings, mark_dynamic
 from uranium.model import UraniumNet, to_obs
 from uranium.model.auxiliary import aux_loss, jepa_std
-from uranium.model.config import AUX_JEPA_SLOTS, CORES, VariantConfig, aux_adam_eps, check_aux, check_net, new_net_config, size_mismatch
+from uranium.model.config import AUX_JEPA_SLOTS, CORES, VariantConfig, aux_adam_eps, check_aux, new_net_config, size_mismatch
 from uranium.model.monitor import SPEC_COLUMNS, ReluMonitor, channel_counts_of, packed, relu_stats, spatial_alarm, spatial_due, spatial_every
 from uranium.model.net import stage, to_device, trim_entity_pad
 
@@ -88,7 +88,6 @@ class BcTrainer:
              sizes: dict | None = None) -> "BcTrainer":
         cfg = json.loads(cfg_json)
         variant = variant or VariantConfig()
-        check_net(variant, sizes)
         want = new_net_config(core, cfg["value"].get("win_open") is not None, variant, sizes)
         if variant.outer and cfg["seq_len"] % variant.outer:
             raise ValueError(f"[model] outer = {variant.outer} must divide seq_len {cfg['seq_len']} (032 §2.7)")

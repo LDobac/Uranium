@@ -69,7 +69,7 @@ def test_net_table_sets_sizes_032_r28():
     {"entiy": {"d_model": 64}}, {"entity": {"d_modle": 64}}, {"entity": 64}, {"entity": {"d_model": 64.0}}, {"entity": {"d_model": True}},
     {"entity": {"d_model": 0}}, {"entity": {"d_model": -8}}, {"entity": {"dropout": 1}}, {"entity": {"dropout": 1.5}}, {"spatial": {"stages": [8, 8, 16]}},
     {"spatial": {"stages": (8, 8, 16, 16)}}, {"spatial": {"stages": [8, 8, 16, 0]}}, {"spatial": {"pool": "256"}}, {"input": {"map_size": 64}},
-    {"core": {"kind": "Gtrxl"}}, {"value": {"win_open": True}}, {"heads": {"ar": [256]}},
+    {"core": {"kind": "Gtrxl"}}, {"value": {"win_open": True}}, {"heads": {"ar": [256]}}, [], 0, "",
 ])
 def test_net_table_is_strict_032_ac18(table):
     with pytest.raises(ValueError, match=r"\[net\]"):
@@ -175,6 +175,27 @@ def test_patch_projection_and_location_match_definition_032_ac19():
                     for c in range(P):
                         cell = (gy * P + r) * side + gx * P + c
                         assert torch.allclose(loc[:, cell], y[:, r * P + c], atol=1e-6)
+
+
+@pytest.mark.parametrize("name", PATCH_VARIANTS)
+def test_patch_act_logp_matches_sequence_032_ac19(name):
+    cfg, b, t, obs, _, _ = patch_tiny(PATCH_VARIANTS[name])
+    net = net_of(cfg)
+    g = torch.Generator().manual_seed(11)
+    with torch.no_grad():
+        s = net.init_state(b)
+        chosen, lps = [], []
+        for k in range(t):
+            out = net.act(rows_at(obs, b, t, k), s, 1.0, g)
+            s = out["state"]
+            chosen.append(out["action"])
+            lps.append(out["head_log_prob"])
+        labels = {k: torch.stack([c[k] for c in chosen], 1).reshape(b * t, *chosen[0][k].shape[1:]) for k in HEADS}
+        seq = net.forward_seq(obs, labels, None, net.init_state(b), t)
+    want = torch.stack(lps, 1).reshape(b * t, -1)
+    got = torch.stack([seq["logp"][k] for k in HEADS], 1)
+    assert torch.allclose(got, want, atol=1e-4)
+    assert (labels["target_loc"] > 0).any()
 
 
 @pytest.mark.parametrize("name", PATCH_VARIANTS)
