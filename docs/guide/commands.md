@@ -105,8 +105,8 @@ URANIUM_BC_MICRO_LANES=1                 # 041-R3 레인 그룹 (AMB-041-7)
 URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3이면 학습과 CPU를 다툼)
 ```
 - 045 B 구성(`config/bc_m2b_*.toml`) 학습([041-R17](../spec/2026_10_15_22_24_041-imitation-learning.md), [045-R9](../spec/2026_11_20_09_12_045-scaleup-b-patch-lineage.md), 근거 [m2b_measure](../report/bench/2026_11_20_11_23_m2b_measure.md)):
-  - Linux ROCm 호스트: 엔티티 재계산 조각 16(`URANIUM_BC_ENTITY_CHUNK=16`, 끄면 최악 모양 12 GiB 초과).
-  - Windows CUDA 호스트: 재계산 끔 + `URANIUM_COMPILE=default` + 레인 그룹 2(`URANIUM_BC_MICRO_LANES=2`). compile 모드는 `.env`가 아니라 줄기 실행 스크립트의 학습 단계에서만 준다. 안 주면 CUDA 학습 기본값 `reduce-overhead`(`python/uranium/device.py`)로 돌아 GPU 메모리가 넘친다.
+  - Linux ROCm 호스트: 엔티티 재계산 조각 16(`URANIUM_BC_ENTITY_CHUNK=16`, 끄면 최악 모양 12 GiB 초과). 호스트 `.env`가 아니라 줄기 스크립트의 학습 프로세스에서 준다.
+  - Windows CUDA 호스트: 재계산 끔 + `URANIUM_COMPILE=default` + 레인 그룹 2(`URANIUM_BC_MICRO_LANES=2`) + `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`(속도 그대로, GPU 전용 11.63 → 9.44 GiB). compile 모드와 할당자 설정은 `.env`가 아니라 줄기 실행 스크립트의 학습 단계에서만 준다. 안 주면 CUDA 학습 기본값 `reduce-overhead`(`python/uranium/device.py`)로 돌아 GPU 메모리가 넘친다.
   - 재계산 + `URANIUM_COMPILE=reduce-overhead` 조합은 쓰지 않는다(조각 8은 첫 update부터 손실 non-finite, 16은 45분 안에 컴파일 안 끝남). 재계산 끔 + `reduce-overhead`는 GPU 메모리가 시스템 메모리로 넘쳐 느려짐.
 - 각 키 설명은 [7 BC](#7-bc) "메모리·공급 환경변수".
 
