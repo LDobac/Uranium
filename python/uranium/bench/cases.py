@@ -250,7 +250,7 @@ def masked_softmax(ctx: Ctx) -> Row:
 
 def pointer_loop(ctx: Ctx, net_cache: dict) -> Row:
     def make(dev):
-        net = model(net_cache, "Gtrxl", dev, base=ctx.net)
+        net = model(net_cache, "Gtrxl", dev)
         g = seeded(11)
         b, n = 16, 256
         obs = random_obs(b, n, net.cfg.input, dev, g)

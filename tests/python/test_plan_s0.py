@@ -523,7 +523,7 @@ def test_verdict_own_state_criterion():
     assert rows(_report(**flat, cut=((0.01, -0.01, 0.02), (0.0, -0.02, 0.02), (0.01, -0.02, 0.03))))[3] is True
 
 
-def test_plan_dump_refuses_a_patch_model_045(tiny_config, shards, tmp_path):
+def test_plan_dump_refuses_a_patch_model_032_r29(tiny_config, shards, tmp_path):
     from testkit import patch_checkpoint
 
     from uranium.__main__ import main
