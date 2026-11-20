@@ -808,3 +808,4 @@
 - 13:3x — 시작: 표본 끝-끝 남은 단계 연속 실행(실패하면 그 단계에서 멈춤) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 7절)
 - 14:01 — 표본 끝-끝 진행: 사람 데이터 BC·손실 곡선·r1·r2·r3 판·d1·t1·gn 두 번 통과, t2·측정 진행 중 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 7절)
 - 14:34 — 끝: 표본 끝-끝(M2B-5) 통과 — 모든 단계 종류 통과, 할당자 설정 뒤 학습 GPU 전용 9.4~10.4 GiB, 스크립트 결함 6건 고침, 본 줄기 시작은 사용자 확인 대기 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 7절)
+- 15:10 — 시작(사용자 확인): m2b 본 줄기 사람 데이터 단계(s1 → s1e2 → s2e2 → 혼합 7 epoch, 약 98,000 update, Windows CUDA 호스트, 분리 실행) — 첫 update부터 손실 유한, 초반 약 2.2초/update, GPU 전용 6.6 GiB, 학습 시간 어림 약 3.4일. 첫 DAgger부터는 보충 판 경로를 넣은 뒤 따로 시작 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 7절)
