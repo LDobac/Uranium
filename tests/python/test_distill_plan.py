@@ -29,7 +29,7 @@ FULL = {
 def _other_plans(tmp_path: Path) -> Path:
     d = tmp_path / "tracked"
     if not d.exists():
-        shutil.copytree(PLANS, d, ignore=shutil.ignore_patterns("distill_m2_d*"))
+        shutil.copytree(PLANS, d, ignore=shutil.ignore_patterns("distill_m2_d*", "distill_m2b_d*"))
     return d
 
 
@@ -70,7 +70,7 @@ def test_distill_seeds_disjoint_044_r1(tmp_path):
     assert len(set(s1)) == 600 and len(set(s2)) == 300 and not set(s1) & set(s2)
     tracked = set()
     for p in PLANS.rglob("*.toml"):
-        if not p.name.startswith("distill_m2_d"):
+        if not (p.name.startswith("distill_m2_d") or rcp.is_m2b_copy(p)):
             tracked |= rcp.plan_seeds(p)
     t0_tp = rcp.plan_seeds(PLANS / "protocol" / "t0_tp.toml")
     assert len(t0_tp) == 64 and t0_tp <= tracked
@@ -128,7 +128,7 @@ def test_distill_topup_seeds_disjoint_044_r5(tmp_path):
     assert set(d1) | set(d2) <= rounds and not rounds & set().union(*seeds.values())
     tracked = set()
     for p in PLANS.rglob("*.toml"):
-        if not p.name.startswith("distill_m2_d"):
+        if not (p.name.startswith("distill_m2_d") or rcp.is_m2b_copy(p)):
             tracked |= rcp.plan_seeds(p)
     assert not tracked & set().union(*seeds.values())
     for bad in (dict(extra=30), dict(extra=1020), dict(extra=20, part=0)):

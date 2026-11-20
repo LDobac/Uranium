@@ -64,7 +64,7 @@ def test_teacher_round_seeds_disjoint_044_r8():
     assert len(block) == 600
     tracked = set()
     for p in PLANS.rglob("*.toml"):
-        if not p.name.startswith("dagger_m2_t"):
+        if not (p.name.startswith("dagger_m2_t") or rcp.is_m2b_copy(p)):
             tracked |= rcp.plan_seeds(p)
     assert rcp.plan_seeds(PLANS / "protocol" / "t0_tp.toml") <= tracked
     assert not tracked & block
@@ -194,7 +194,7 @@ def test_teacher_round_t2_zerg_seeds_044_r8(tmp_path):
     assert block == {rcp.splitmix64(5_000_000 + k) >> 32 for k in range(1, 3001)} and len(block) == 3000
     tracked = set()
     for p in PLANS.rglob("*.toml"):
-        if p.name != "dagger_m2_t2_z.toml":
+        if p.name != "dagger_m2_t2_z.toml" and not rcp.is_m2b_copy(p):
             tracked |= rcp.plan_seeds(p)
     assert not tracked & block
     others = rcp.reserved_seeds(skip_teacher_round_z=True)

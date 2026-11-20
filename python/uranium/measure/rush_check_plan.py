@@ -229,9 +229,23 @@ def taken_seeds(out_dir: Path, skip: tuple[Path, ...]) -> set[int]:
         taken.update(range(base + 1, base + count + 1))
     skip = tuple(p.resolve() for p in skip)
     for other in sorted(out_dir.rglob("*.toml")):
-        if other.resolve() not in skip:
+        if other.resolve() not in skip and not is_m2b_copy(other):
             taken |= plan_seeds(other)
     return taken
+
+
+def _seed_list(path: Path) -> list[int] | None:
+    return tomllib.loads(path.read_text(encoding="utf-8")).get("seeds")
+
+
+def is_m2b_copy(path: Path) -> bool:
+    if "_m2b_" not in path.name:
+        return False
+    orig = path.with_name(path.name.replace("_m2b_", "_m2_", 1))
+    if not orig.is_file():
+        return False
+    a, b = _seed_list(orig), _seed_list(path)
+    return a is not None and a == b
 
 
 def render_distill(rnd: int, checkpoint: str, name: str, half: bool, extra: int = 0, part: int = 1) -> tuple[str, list[int]]:

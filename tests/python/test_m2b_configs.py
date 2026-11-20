@@ -134,3 +134,75 @@ def test_m2b_plan_is_the_original_with_checkpoint_and_name_045_r3(name):
     diff = [(x, y) for x, y in zip(la, lb) if x != y]
     assert diff == [(f'name = "{ta["name"]}"', f'name = "{tb["name"]}"')]
     assert "m2b" in tb["name"]
+
+
+COPIES = ("distill_m2_d1", "distill_m2_d1_x1", "dagger_m2_t1", "dagger_m2_t2", "dagger_m2_t2_z")
+
+
+def _m2b_copy(src, dst, seeds=None):
+    t = src.read_text(encoding="utf-8").replace("\r\n", "\n")
+    t = re.sub(r'checkpoint = "checkpoints/m2-[^"]+"', 'checkpoint = "checkpoints/m2b-x/ckpt-1"', t)
+    t = re.sub(r'^name = "([^"]+)"', r'name = "\1-m2b"', t, count=1, flags=re.M)
+    if seeds is not None:
+        t = re.sub(r"^seeds = \[.*?\]", "seeds = [" + ", ".join(map(str, seeds)) + "]", t, count=1, flags=re.M | re.S)
+    dst.write_text(t, encoding="utf-8")
+
+
+def _plans_with_copies(tmp_path):
+    import shutil
+
+    d = tmp_path / "plans"
+    shutil.copytree(PLANS, d)
+    for n in COPIES:
+        _m2b_copy(d / f"{n}.toml", d / f"{n.replace('_m2_', '_m2b_', 1)}.toml")
+    return d
+
+
+def test_m2b_copy_skipped_when_original_regenerated_045_r3(tmp_path):
+    from uranium.measure import rush_check_plan as rcp
+
+    d = _plans_with_copies(tmp_path)
+    for n in COPIES:
+        orig, copy = d / f"{n}.toml", d / f"{n.replace('_m2_', '_m2b_', 1)}.toml"
+        assert rcp.is_m2b_copy(copy) and not rcp.is_m2b_copy(orig)
+        seeds = rcp.plan_seeds(orig)
+        assert seeds == rcp.plan_seeds(copy)
+        assert not rcp.taken_seeds(d, (orig,)) & seeds
+        assert seeds <= rcp.taken_seeds(d, ())
+
+
+def test_m2b_plan_with_other_seeds_counted_045_r3(tmp_path):
+    from uranium.measure import rush_check_plan as rcp
+
+    d = _plans_with_copies(tmp_path)
+    copy = d / "distill_m2b_d1.toml"
+    new = [7_700_000_001, 7_700_000_002]
+    _m2b_copy(d / "distill_m2_d1.toml", copy, new)
+    assert not rcp.is_m2b_copy(copy)
+    assert set(new) <= rcp.taken_seeds(d, (d / "distill_m2_d1.toml",))
+
+
+def test_m2b_plan_without_original_counted_045_r3(tmp_path):
+    from uranium.measure import rush_check_plan as rcp
+
+    d = _plans_with_copies(tmp_path)
+    lone = d / "distill_m2b_d1_x9.toml"
+    new = [7_700_000_003, 7_700_000_004]
+    _m2b_copy(d / "distill_m2_d1.toml", lone, new)
+    assert not rcp.is_m2b_copy(lone)
+    assert set(new) <= rcp.taken_seeds(d, ())
+
+
+def test_m2b_copies_do_not_block_regeneration_045_r3(tmp_path):
+    from uranium.measure import rush_check_plan as rcp
+
+    d = _plans_with_copies(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    for name, plan in (("d1", rcp.write_distill(d, 1, "checkpoints/x/ckpt-1", out / "d1.toml")),
+                       ("x1", rcp.write_distill(d, 1, "checkpoints/x/ckpt-1", out / "x1.toml", extra=500, part=1)),
+                       ("t1", rcp.write_teacher_round(d, "checkpoints/x/ckpt-1", out / "t1.toml", rnd="t1")),
+                       ("t2", rcp.write_teacher_round(d, "checkpoints/x/ckpt-1", out / "t2.toml", rnd="t2")),
+                       ("t2z", rcp.write_teacher_round(d, "checkpoints/x/ckpt-1", out / "t2z.toml", rnd="t2", zerg=600))):
+        orig = {"d1": "distill_m2_d1", "x1": "distill_m2_d1_x1", "t1": "dagger_m2_t1", "t2": "dagger_m2_t2", "t2z": "dagger_m2_t2_z"}[name]
+        assert rcp.plan_seeds(plan) == rcp.plan_seeds(d / f"{orig}.toml"), name
