@@ -85,6 +85,24 @@ def test_060_r1_unsupported_shape_warns_once_without_loading(monkeypatch, capsys
 
 def test_060_r1_supported_shape_matches_kernel_limits():
     assert kernels.entity_attn_unsupported(supported_net()) is None
+    assert kernels.entity_attn_unsupported(supported_net(buckets=32)) is None
+
+
+def test_060_r1_variant_tokens_count_toward_table_rows():
+    from uranium.model.config import VariantConfig
+
+    cfg = net_config("tiny-gtrxl", variant=VariantConfig(ctx_token=True))
+    cfg.entity.heads, cfg.entity.distance_buckets = 1, 32
+    torch.manual_seed(5)
+    assert "rows 65 > 64" in kernels.entity_attn_unsupported(UraniumNet(cfg, action_columns()))
+
+
+def test_060_r1_build_env_is_scoped(monkeypatch):
+    monkeypatch.setattr(kernels.sys, "platform", "win32")
+    monkeypatch.delenv("TORCH_DONT_CHECK_COMPILER_ABI", raising=False)
+    with kernels.build_env():
+        assert kernels.os.environ["TORCH_DONT_CHECK_COMPILER_ABI"] == "1"
+    assert "TORCH_DONT_CHECK_COMPILER_ABI" not in kernels.os.environ
 
 
 def test_060_r1_available_does_not_raise(fresh):

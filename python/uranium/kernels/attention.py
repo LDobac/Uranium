@@ -71,7 +71,7 @@ def available(device) -> bool:
 def require(device) -> bool:
     if available(device):
         return True
-    raise KernelError(f"[kernels] attn_bias: {ENTITY_ATTN}=fused but the kernel is not loaded ({load_error('attn_bias') or 'not a GPU tensor'}); the entry point start check should have stopped this run (060-R1 ⑦)")
+    raise KernelError(f"[kernels] attn_bias: {ENTITY_ATTN}=fused but the kernel is not loaded ({load_error('attn_bias')}); the entry point start check should have stopped this run (060-R1 ⑦)")
 
 
 def fused(q, k, v, bucket_u8, table, key_ok):
