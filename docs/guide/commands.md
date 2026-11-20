@@ -104,6 +104,10 @@ URANIUM_MALLOC_ARENA_MAX=2               # glibc arena 수 제한 (긴 run에서
 URANIUM_BC_MICRO_LANES=1                 # 041-R3 레인 그룹 (AMB-041-7)
 URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3이면 학습과 CPU를 다툼)
 ```
+- 045 B 구성(`config/bc_m2b_*.toml`) 학습([041-R17](../spec/2026_10_15_22_24_041-imitation-learning.md), [045-R9](../spec/2026_11_20_09_12_045-scaleup-b-patch-lineage.md), 근거 [m2b_measure](../report/bench/2026_11_20_11_23_m2b_measure.md)):
+  - Linux ROCm 호스트: 엔티티 재계산 조각 16(`URANIUM_BC_ENTITY_CHUNK=16`, 끄면 최악 모양 12 GiB 초과).
+  - Windows CUDA 호스트: 재계산 끔 + `URANIUM_COMPILE=default` + 레인 그룹 2(`URANIUM_BC_MICRO_LANES=2`). compile 모드는 `.env`가 아니라 줄기 실행 스크립트의 학습 단계에서만 준다. 안 주면 CUDA 학습 기본값 `reduce-overhead`(`python/uranium/device.py`)로 돌아 GPU 메모리가 넘친다.
+  - 재계산 + `URANIUM_COMPILE=reduce-overhead` 조합은 쓰지 않는다(조각 8은 첫 update부터 손실 non-finite, 16은 45분 안에 컴파일 안 끝남). 재계산 끔 + `reduce-overhead`는 GPU 메모리가 시스템 메모리로 넘쳐 느려짐.
 - 각 키 설명은 [7 BC](#7-bc) "메모리·공급 환경변수".
 
 ## 2. 벤치·프로파일
@@ -115,6 +119,7 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - 실데이터 BC update(060-R2, [AMB-041-7](../spec/README.md)): `python -m uranium bench bc (--dataset <rel> | --shards <dir>)... [--config config/bc.toml] [--groups 1,2,4,8] [--updates 20] [--seed 1] [--phases] [--ops 25] [--json <log>]`
   - 그룹 크기마다 같은 초기 가중치·batch로 update 시간, 데이터 대기, 최대 GPU 할당·상주 메모리([060-R3](../spec/2026_10_15_22_24_060-infra.md)), update별 손실. 첫 update는 워밍업(중앙값 제외).
   - 모델은 `--config`의 `[net]`·`[model]`([032-R28](../spec/2026_10_15_22_24_032-model-architecture.md) ⑤, `bc`와 같은 크기 경로). JSON 그룹마다 `params`(파라미터 수).
+  - 최악 모양([060-AC7](../spec/2026_10_15_22_24_060-infra.md) ①): `--groups 1`, 설정 사본 `pad_entities = 512`와 함께 환경변수 `URANIUM_BC_PAD_ENTITIES=512`도 준다(Linux ROCm 호스트 학습 기본값 32가 설정의 `pad_entities`를 덮어씀, [m2b_measure](../report/bench/2026_11_20_11_23_m2b_measure.md) 7절).
 - 최적화 동등성([AMB-000-4](../spec/README.md)): 기준·후보를 같은 `--seed`·데이터로 `bench bc --updates 100 --json` → `python -m uranium bench loss <기준.json> <후보.json> [--group N] [--window 20]`(구간 평균 손실 상대 차이. 그룹 크기가 다르면 dropout 난수열이 다름).
 - BC 구간별·연산별 시간([060-AC4](../spec/2026_10_15_22_24_060-infra.md)): `python -m uranium bc-profile (--dataset <rel> | --shards <dir>)... [--backend cuda|rocm|cpu] [--core gtrxl|lstm] [--batches 3] [--ops 25] [--trace <chrome trace json>]`(모델은 `--config`의 `[net]`·`[model]`). 학습 중에는 `URANIUM_BC_PROFILE=1`로 update마다 구간 시간 로그.
 - 장치 비교([032-AC1](../spec/2026_10_15_22_24_032-model-architecture.md)·AC8): `pytest -m gpu tests/python`(CPU f32 대비, CUDA bf16은 잠정 허용치).
