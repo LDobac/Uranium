@@ -1,12 +1,46 @@
 import json
+from pathlib import Path
 
 import pytest
 
-from eval_helpers import CLEAN_GIT, CUE, HUMAN_DS, LIN, SHA
+from eval_helpers import CLEAN_GIT, CUE, HUMAN_DS, LIN, SHA, fake_game_order, record, set_outputs
 
-from uranium.measure import protocol
+from uranium.measure import diag_table, protocol, spatial_logs
 
 M2B = ("s2e2b", "t1b", "t2b")
+
+
+def patch_outputs(out: Path) -> Path:
+    for name in CUE["sets"]:
+        d = set_outputs(out / name, name)
+        man = json.loads((d / "dump" / "manifest.json").read_text(encoding="utf-8"))
+        man["stages"] = [x for x in man["stages"] if x != "sp_pool"]
+        (d / "dump" / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
+        pr = json.loads((d / "probes.json").read_text(encoding="utf-8"))
+        for r in pr["races"].values():
+            for t in r["tasks"].values():
+                if "metrics" in t:
+                    t["metrics"] = {k: v for k, v in t["metrics"].items() if not k.startswith("sp_pool")}
+        (d / "probes.json").write_text(json.dumps(pr), encoding="utf-8")
+    log = spatial_logs.not_measurable(Path("m2b-teacher-t2.log"), 8, LIN["metric"]["dead_channels"]["from_update"], 3258)
+    (out / protocol.TRAIN_LOG).write_text(json.dumps(log), encoding="utf-8")
+    return record(out)
+
+
+def test_patch_model_diag_outputs_accepted_045_r6(tmp_path, monkeypatch):
+    fake_game_order(monkeypatch)
+    out = patch_outputs(tmp_path / "d")
+    assert protocol.check_diag(LIN, "cue_diag", out) == []
+    assert protocol.check_diag(LIN, "dead_channels", out) == []
+    log = json.loads((out / protocol.TRAIN_LOG).read_text(encoding="utf-8"))
+    (out / protocol.TRAIN_LOG).write_text(json.dumps({**log, "spatial_patch": 0}), encoding="utf-8")
+    assert any("not_measurable without a patch spatial path" in p for p in protocol.check_diag(LIN, "dead_channels", out))
+    (out / protocol.TRAIN_LOG).write_text(json.dumps({**log, "from_update": 1}), encoding="utf-8")
+    assert any("from_update 1, pinned" in p for p in protocol.check_diag(LIN, "dead_channels", out))
+    (out / protocol.TRAIN_LOG).write_text(json.dumps(log), encoding="utf-8")
+    md = "\n".join(diag_table.markdown(LIN, {"m2b-t2": diag_table.folder_table(LIN, out, ["cue_diag", "dead_channels"])}))
+    assert "| m2b-t2 | 측정 대상 없음 (no targets): the patch spatial path (spatial_patch = 8) has no dead-channel targets" in md
+    assert "none from update" not in md
 
 
 def fake_set_data(lin, name, shared=None, work=None, create=True):

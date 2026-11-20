@@ -541,6 +541,10 @@ def check_train_log(lin: dict, out: Path) -> list[str]:
     if r is not None:
         if r.get("from_update") != m["from_update"]:
             problems.append(f"{TRAIN_LOG} from_update {r.get('from_update')!r}, pinned {m['from_update']}")
+        if r.get("not_measurable"):
+            if not r.get("spatial_patch"):
+                problems.append(f"{TRAIN_LOG}: not_measurable without a patch spatial path (spatial_patch {r.get('spatial_patch')!r})")
+            return problems
         if not r.get("sp_records_from"):
             problems.append(f"{TRAIN_LOG}: no sp_* record from update {m['from_update']} (a run without [monitor] spatial_every?)")
         lack = [k for k in m["layers"] if k not in (r.get("dead") or {})]

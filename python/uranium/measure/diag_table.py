@@ -122,6 +122,8 @@ def markdown(lin: dict, res: dict[str, dict]) -> list[str]:
             s = r["train_log"]
             if s is None:
                 L.append(f"| {lab} | not measured (no training-log statistics) ||||||")
+            elif s.get("not_measurable"):
+                L.append(f"| {lab} | 측정 대상 없음 (no targets): {s['not_measurable']} ||||||")
             elif "dead" not in s:
                 L.append(f"| {lab} | none from update {s.get('from_update')} ||||||")
             else:
