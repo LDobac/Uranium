@@ -1,4 +1,5 @@
 import argparse
+import functools
 import json
 from pathlib import Path
 
@@ -9,6 +10,11 @@ from uranium.passes import ForcedPass
 
 HEADS = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 RACES = ("terran", "protoss", "zerg")
+LOC_GROUPS = ("build", "move", "rally", "other")
+LOC_WITHIN = 4.0
+LOC_UNIT = ("045-R7 over the scored steps with a location label (all, and by the label action: build = group build, move = group move, "
+            "rally = SetRally_Pos, other = the rest): steps, nll = mean -log p of the label cell, within4 = share with the Euclidean distance "
+            "between the argmax cell and the label cell <= 4 cells, exact = share with argmax = label, err_mean = mean distance (cells, map tiles)")
 
 UNITS = {
     "action_top1 / action_top5": "share of scored steps",
@@ -24,6 +30,18 @@ UNITS = {
 }
 
 
+@functools.cache
+def loc_group_of() -> torch.Tensor:
+    names = tb.action_names()
+    rally = tb.action_id("SetRally_Pos")
+
+    def group(aid: int) -> int:
+        g = tb.action_group(aid)
+        return 0 if g == "build" else 1 if g == "move" else 2 if aid == rally else 3
+
+    return torch.tensor([group(i) for i in range(len(names))])
+
+
 def add_parser(sub) -> None:
     p = sub.add_parser("bc-eval", help="offline BC metrics of a checkpoint on a split")
     p.add_argument("--dataset", action="append", default=[])
@@ -31,6 +49,7 @@ def add_parser(sub) -> None:
     p.add_argument("--checkpoint", required=True, help="checkpoint folder, or a run folder on the shared drive (its LATEST)")
     p.add_argument("--split", choices=["train", "val", "test"], default="test")
     p.add_argument("--backend", choices=["cuda", "rocm", "cpu"])
+    p.add_argument("--precision", choices=["f32"], help="override the backend's default precision (045-R7 location metrics: f32)")
     p.add_argument("--core", choices=["lstm", "gtrxl"], help="checked against the checkpoint")
     p.add_argument("--games", type=int, help="score this many games by a fixed-seed shuffle of the split")
     p.add_argument("--seed", type=int, default=1)
@@ -56,6 +75,7 @@ class Acc:
         self.nll = [0.0] * len(HEADS)
         self.nll_n = [0] * len(HEADS)
         self.by_race: dict = {}
+        self.loc_groups = torch.zeros(1 + len(LOC_GROUPS), 5, dtype=torch.float64)
 
     @torch.no_grad()
     def score(self, out: dict, g: dict, has_loc, sel_len, races: dict | None = None) -> None:
@@ -83,6 +103,7 @@ class Acc:
             self.loc_err.append((dx * dx + dy * dy).sqrt().cpu())
             self.loc_exact += int((p == t).sum())
             self.loc_n += int(loc_rows.sum())
+            self.score_loc(d["target_loc"], lp["target_loc"], lab, loc_rows)
 
         sl = torch.as_tensor(sel_len, device=dev).long()
         sel_rows = ok & (sl > 0)
@@ -115,6 +136,26 @@ class Acc:
                 used = r_ok if k in ("action", "delay") else r_ok & uses[k].bool()
                 acc["nll"][h] -= float((lp[k].double() * used).sum())
                 acc["nll_n"][h] += int(used.sum())
+
+    def score_loc(self, dist, logp, lab: dict, rows) -> None:
+        p = dist[rows].argmax(1)
+        t = lab["target_loc"][rows]
+        m = round(dist.shape[1] ** 0.5)
+        dy, dx = (p // m - t // m).double(), (p % m - t % m).double()
+        err = (dx * dx + dy * dy).sqrt()
+        vals = torch.stack([torch.ones_like(err), -logp[rows].double(), (err <= LOC_WITHIN).double(), (p == t).double(), err], 1)
+        groups = loc_group_of().to(p.device)
+        grp = groups[lab["action"][rows].clamp(0, len(groups) - 1)]
+        sel = torch.stack([torch.ones_like(err)] + [(grp == i).double() for i in range(len(LOC_GROUPS))])
+        self.loc_groups += (sel @ vals).cpu()
+
+    def loc_report(self) -> dict:
+        out = {}
+        for i, name in enumerate(("all", *LOC_GROUPS)):
+            n, nll, within, exact, err = self.loc_groups[i].tolist()
+            out[name] = {"steps": int(n), "nll": nll / n if n else None, "within4": within / n if n else None,
+                         "exact": exact / n if n else None, "err_mean": err / n if n else None}
+        return out
 
     def race_report(self) -> dict:
         out = {}
@@ -149,6 +190,8 @@ class Acc:
             "by_enemy_race": self.race_report(),
             "win_open_mse": None, "surrender": None,
             "units": UNITS,
+            "target_loc_groups": self.loc_report(),
+            "target_loc_groups_unit": LOC_UNIT,
         }
 
 
@@ -283,8 +326,10 @@ def main(a) -> int:
     ckpt_dir = str(_core.resolve_checkpoint(a.checkpoint))
     backend, device, precision = resolve(a.backend)
     configure(backend)
+    precision = getattr(a, "precision", None) or precision
     rep = evaluate(dirs, ckpt_dir, a.split, a.games, a.seed, a.config, device, precision, a.core, a.maps_dir, a.synthetic_maps,
                    a.bunker_before, getattr(a, "chain_start_sources", None))
+    rep["backend"], rep["precision"] = backend, precision
     text = json.dumps(rep, indent=2)
     print(text)
     if a.out:

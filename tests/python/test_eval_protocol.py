@@ -597,7 +597,7 @@ def test_diag_settings_are_the_tools_050_r9():
     assert DEAD["kind"] == "diag_train_log" and "ck1" in DEAD["not_measured"] and LIN["lineage"]["ck1"]["new_metrics"] == ["cue_diag", "ops", "rush_combat"]
     assert [p["id"] for p in LIN["point"] if p.get("diag_final_only")] == ["s1e2", "rl-fix"]
     for pt in LIN["point"]:
-        assert {"cue_diag", "dead_channels"} <= set(pt["metrics"]), pt["id"]
+        assert {"cue_diag", "dead_channels"} - ({"dead_channels"} if pt.get("lineages") == ["m2b"] else set()) <= set(pt["metrics"]), pt["id"]
         for s in CUE["sets"]:
             assert set(CUE[s]["report"]["stages"]) <= set(CUE[s]["probes"]["stages"])
 

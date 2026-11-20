@@ -9,6 +9,12 @@ new_metrics = ["cue_diag", "ops", "rush_combat"]
 description = "model 2 lineage (BC retrained with the fixes, the same points and metrics)"
 run_prefix = "m2-"
 
+[lineage.m2b]
+description = "scale-up B lineage (045: candidate B sizes with the patch spatial path, the m2 lineage retrained); points s2e2b / t1b / t2b only, cue diagnostics without the sp_pool stage, no dead-channel statistics (045-R6 5)"
+run_prefix = "m2b-"
+points = ["s2e2b", "t1b", "t2b"]
+cue_drop_stages = ["sp_pool"]
+
 [metric.val500]
 kind = "bc_eval"
 description = "action top-1 etc. on 500 target-map val games (032-R17 2, record only from the teacher path on)"
@@ -35,6 +41,19 @@ races = ["terran", "protoss", "zerg"]
 note = "bc-eval writes by_enemy_race (per enemy race steps / action_top1 / nll) in its JSON; an older output lacks it"
 extra_args = ["--bunker-before", "5760"]
 output = "artifacts/bc_e2_val/val500/<run>__<ckpt>.json"
+
+[metric.val_loc]
+kind = "bc_eval"
+description = "045-R7 location metrics on every target-map val game (the spatial-ablation condition: 2,395 games, CUDA f32): bc-eval target_loc_groups (location NLL, share within 4 cells, exact cell, mean distance; all and build / move / rally / other); tracked: all nll, all within4, build exact, rally err_mean"
+datasets = ["replays/shards/stardata", "replays/shards/community", "replays/shards/scr_ladder", "replays/shards/personal"]
+split = "val"
+expect_games = 2395
+backend = "cuda"
+precision = "f32"
+config = "config/bc.toml"
+loc_groups = ["all", "build", "move", "rally", "other"]
+reuse = { "m2:t2" = "A0 of docs/report/investigation/2026_11_19_23_00_spatial_ablation.md (sections 2 and 3, the same definition; user decision 2026-11-20)" }
+output = "artifacts/bc_loc/val_all/<run>__<ckpt>.json"
 
 [metric.test]
 kind = "bc_eval"
@@ -206,7 +225,7 @@ not_measurable = { T = { "count|focus_rows" = "TvT: the max-seen barracks count 
 kind = "diag_train_log"
 description = "032-R25 / 041-R25 dead-channel statistics from the run's training-log sp_* records (tools/eval/spatial_logs.py): max dead share per ReLU output layer, max const S8 / s_pool, min positive share, alarms"
 output = "artifacts/diag/<run>__<ckpt>"
-not_measured = { ck1 = "not measured (no training-log statistics, AMB-050-5)" }
+not_measured = { ck1 = "not measured (no training-log statistics, AMB-050-5)", m2b = "no statistics on the patch spatial path (032-R25 scope, 045-R6 5)" }
 from_update = 600
 layers = ["stem", "c0", "c1", "c2", "c3", "r0", "r1", "r2", "r3", "r4", "r5"]
 
@@ -599,3 +618,35 @@ ck1_checkpoint = "checkpoints/ac1-vtrace-s3/ckpt-3061641/agents/main"
 metrics = ["ac1", "cue_diag", "dead_channels"]
 optional = ["rush", "macro", "tvz", "ops", "rush_combat"]
 ck1_outputs = { ac1 = "eval/ac1-20261101/ac1-vtrace-s3" }
+
+[[point]]
+id = "s2e2b"
+family = "bc"
+lineages = ["m2b"]
+note = "scale-up B BC baseline (045-R6 1: the final checkpoint of m2b-s2e2), test and val 500 by race plus the 045-R7 location metrics; the 050-R10 gate is not applied, record only, no verdict threshold (user decision 2026-11-20)"
+run_pattern = "s2e2"
+compare = ["m2:s2e2", "ck1:r1"]
+metrics = ["test", "val500", "val500_race", "val_loc", "cue_diag"]
+optional = ["per_action", "ops", "rush_combat"]
+
+[[point]]
+id = "t1b"
+family = "bc"
+lineages = ["m2b"]
+note = "scale-up B teacher round t1 (045-R6 2: the final checkpoint of m2b-teacher-t1), measured as point t2 plus the 045-R7 location metrics; compared with t1 = Checkpoint 2 (cells point t1 lacks come from point D, the same checkpoint); the 050-R10 gate is not applied, record only (user decision 2026-11-20)"
+run_pattern = "teacher-t1"
+compare = ["m2:t1", "m2:D", "ck1:r1"]
+t1_platforms = ["windows", "linux"]
+metrics = ["test", "val500", "val500_race", "val_loc", "t1", "t0_tp", "tvz", "rush", "macro", "teacher_mode", "cue_diag"]
+optional = ["per_action", "ops", "rush_combat"]
+
+[[point]]
+id = "t2b"
+family = "bc"
+lineages = ["m2b"]
+note = "scale-up B teacher round t2 (045-R6 2: the final checkpoint of m2b-teacher-t2), measured as point t2 plus the 045-R7 location metrics; compared with t2; the 050-R10 gate is not applied, record only (user decision 2026-11-20)"
+run_pattern = "teacher-t2"
+compare = ["m2:t2", "ck1:r1"]
+t1_platforms = ["windows", "linux"]
+metrics = ["test", "val500", "val500_race", "val_loc", "t1", "t0_tp", "tvz", "rush", "macro", "teacher_mode", "cue_diag"]
+optional = ["per_action", "ops", "rush_combat"]

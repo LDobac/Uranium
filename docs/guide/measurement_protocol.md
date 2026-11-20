@@ -46,12 +46,18 @@
   - 네 지점 모두 050-R10 게이트 적용, 교사 모드 판 비율 기록.
   - `gn`: GroupNorm 이어 학습 모델([050-R9][s050] 지점 표 2026-11-17 행, 사용자 결정 2026-11-17, [gn_resume](../report/experiment/2026_11_17_10_05_gn_resume.md) 3절). run `m2-gn-t1`·`m2-gn-t1e<번호>`만. [Checkpoint 2 표](../report/release/2026_11_17_09_05_checkpoint2.md)(3절) 전체: test 1,199, val 500(종족별), T1 300판(Windows·Linux), T0 표준 테란·프로토스 각 32판, TvZ 32판, 러시 128판 + 운영형 40판, 교사 모드 판 비율, 진단. 050-R10 게이트는 적용하지 않음, 그 지표(종족별 val, T0 표준 테란·프로토스, 교사 모드 판 비율)는 측정·기록만(사용자 결정 2026-11-17).
   - `t2`(run `m2-teacher-t2`, [044-R8][s044] ⑤)·`rl-fix-3`(run `m2-rl-fix-3` 끝 체크포인트, [044-R11][s044]; 점검은 기존 `rl-fix` 지점): `gn`과 같은 표 + `zerg_build`·`tp_style`(사용자 결정 2026-11-17). `rl-fix-3`과 `m2-rl-fix-3` 점검은 RL 규칙(`t0_tp_rl`·`tvz_rl`·`t1_rl`, `zero_last_failed` false) → BC 조건인 gn·t2와 비교할 때 조건이 다름을 표시. 점검마다 `zerg_build`·`tp_style`도 셈. 050-R10 게이트와 교사 라운드 교사 모드 ≤ 3/32는 이 세 곳에서 기록만, 판정은 [044-R13][s044] 합격 기준(gn 대비)·[044-R11][s044] 중단 규칙(기록만은 사용자 결정 2026-11-17, [AMB-044-12][amb] Resolved).
+- 모델 확대 B 줄기 `m2b`([045-R6][s045], [050-R9][s050] 2026-11-20 행): run `m2b-*`, 지점 `s2e2b`·`t1b`·`t2b`만(`lineage.toml` `points`, 지점 `lineages = ["m2b"]`). 다른 줄기에서 이 지점, `m2b`에서 다른 지점은 거부.
+  - `s2e2b`(run `m2b-s2e2` 마지막): test, val 500(종족별), 위치 지표(`val_loc`), 단서 진단. 비교 `m2-s2e2`.
+  - `t1b`(run `m2b-teacher-t1` 마지막)·`t2b`(run `m2b-teacher-t2` 마지막): `t2`와 같은 표 + `val_loc`. 비교 `t1b`↔t1(`t1` 지점에 없는 test·T1은 같은 체크포인트인 `D` 지점 값), `t2b`↔t2.
+  - Checkpoint 1(`r1`)은 기존 수치. 지점 `compare` 필드에 비교 대상(`<줄기>:<지점>`), `protocol.py list`에 표시.
+  - 050-R10 게이트 미적용·기록만, 판정 문턱 없음. 단서 진단은 `sp_pool` 단계를 빼고 probes(`[lineage.m2b] cue_drop_stages`). 죽은 채널 통계 없음(`dead_channels` 거부).
 - `metrics` = Checkpoint 1 경로에서 잰 지표(바로 비교 가능). `optional` = Checkpoint 1 값 없는 지표. 그중 050-R9 지점 표가 요구하는 칸은 `ck1_supplement`로 Checkpoint 1 쪽 보충 측정 가능.
 
 | 지표 | 내용 | 고정 조건 |
 |---|---|---|
 | `val500` | 대상 맵 val 500게임 teacher forcing | seed 1, ROCm f32, `config/bc.toml` |
 | `val500_race` | `val500` 상대 종족별([050-R10][s050] ②) | `val500`과 같은 실행. bc-eval 출력 `by_enemy_race`(종족별 step·top-1·NLL). 이 필드 없는 옛 출력은 `check-bc-eval`이 거부 |
+| `val_loc` | 위치 지표([045-R7][s045]): bc-eval `target_loc_groups`(아래 "지표 정의") | val 전체 2,395게임(선택 seed 없음), CUDA **f32**(`--precision f32`), `config/bc.toml` = [spatial_ablation] 1절 조건. `check-bc-eval`이 판 수·정밀도·묶음 확인. t2 값은 그 리포트 A0 재사용 |
 | `test` | 대상 맵 test 전체(1,199게임) | CUDA, BC 기준선 |
 | `per_action` | 교사 보관분(2026-11-06 교사 판 val 165게임) 행동별 top-1 | CUDA, `--holdout orig` |
 | `rush` | [050-R6][s050] 러시 128판 | seed 목록 45,001…, stochastic, `zero_last_failed` false, 60분 |
@@ -91,6 +97,7 @@
 2. **teacher-forced 지표**(새 경로)
    - `python tools/eval/protocol.py bc-eval --metric val500 --lineage m2 --point s2e2 --checkpoint <ckpt>` → 고정 명령 출력, 그 backend 장비에서 실행.
    - 확인 `protocol.py check-bc-eval <json> --metric val500`(split·게임 수·selection seed).
+   - 위치 지표: `protocol.py bc-eval --metric val_loc --lineage m2b --point t2b --checkpoint checkpoints/m2b-teacher-t2/ckpt-<n>` → CUDA 장비에서 실행 → `check-bc-eval <json> --metric val_loc`(판 수 2,395·f32·묶음, 추적 4개 출력).
    - 행동별: `python tools/eval/per_action.py --checkpoint <ckpt> --out <json>` → `python tools/eval/per_action_table.py BC=<json> m2-e1=<json> ...`.
      - 기존 필드 = 현재 관측 점수(Checkpoint 1 비교·Checkpoint 1 경로 연장 규칙, 경로 2는 기록만).
      - `chain_start` 블록 = 체인 시작 관측 점수([041-R30][s041] ⑤, 경로 2 연장 규칙 입력, 사용자 결정 2026-11-12). `--chain-start none`이면 생략.
@@ -176,6 +183,7 @@
 - 템플릿 조건 해시나 고정값(판 수·표집·`zero_last_failed`·`max_frames`)이 `lineage.toml`과 다름. 이름·체크포인트(p0·p1의 모델 모두)가 자리표시가 아님
 - `m2` 경로인데 run 이름이 `m2-`로 시작 안 함, `run_pattern` 있는 지점(`d1`·`d2`·`t1`·`D`·`gn`·`rl-fix`)에서 run 이름 불일치
 - Checkpoint 1 대응 없는 지점(`r3`·`d1`·`d2`·`t1`·`D`·`gn`·`rl-fix`)의 `--lineage ck1`
+- `m2b` 지점(`s2e2b`·`t1b`·`t2b`)의 다른 `--lineage`, `--lineage m2b`의 다른 지점, `m2b`의 `dead_channels`
 - 체크포인트 가중치 파일 없음
 - T1 job 호스트 중 `platform`이 없거나 지점 `t1_platforms`가 아닌 것
 - job에 OSS 봇이 있는데 호스트 봇 해시를 읽을 수 없거나 `t1_bots.toml`에 없음. 해결: 호스트 목록에 `local = true`, 또는 `ssh = "<별칭>"`과 `oss_bots_dir`(그 호스트의 `URANIUM_OSS_BOTS_DIR`), 또는 `--bot-hashes <파일>`(`<주소> <봇> <sha256>` 줄)
@@ -216,6 +224,11 @@
   - Checkpoint 1 임시 결정 "섬멸 승으로 8:00 전에 끝난 판은 통과"는 교사 세션 표(`summary.md`의 T0 Terran sessions)에만 적용 → JSON `scv_8m_16_winpass`로만(r1 31 → 37, r2 34 → 37, e10 26 → 32, Checkpoint 1 RL 37 → 37).
 - 무효 판(상대 크래시): 우리 launcher 0, 상대 launcher 0 아닌 값으로 끝난 Aborted 시도가 있는 판. 그 판의 나중 기록(재시도, Surrender 승)도 안 셈. 우리 쪽도 비정상 종료한 시도는 보통 재시도로 봄.
 - 판 번호: `시도 × 10,000,000 + 단계 × 100,000 + n`에서 시도를 떼고 셈. 한 판 모델 행이 여럿이면 시도 번호가 가장 큰 행, 같으면 나중 행.
+- 위치 지표([045-R7][s045], [spatial_ablation] 2·3절과 같은 정의): bc-eval 출력 `target_loc_groups.<묶음>` = `steps`, `nll`, `within4`, `exact`, `err_mean`.
+  - 대상: 채점 step(가중치 > 0) 중 위치 레이블 있는 step. 묶음은 레이블 행동으로: `build`(행동 그룹 build = `Build_*` 12개), `move`(그룹 move 중 위치 행동 = `Move_Pos`·`Attack_Pos`·`Patrol_Pos`·`Smart_Pos`), `rally`(`SetRally_Pos`), `other`(나머지), `all`(전부).
+  - `nll` = 레이블 칸 −log p 평균, `within4` = argmax 칸과 레이블 칸 유클리드 거리 ≤ 4칸 비율, `exact` = argmax = 레이블 비율, `err_mean` = 거리 평균. 128² 칸(맵 타일), step 단위 평균(합 ÷ step 수).
+  - 추적 4개: `all.nll`, `all.within4`, `build.exact`, `rally.err_mean`(`check-bc-eval --metric val_loc`이 출력).
+  - 기존 보고 키·값은 그대로(`target_loc_err_mean`은 f32 거리 평균이라 `all.err_mean`과 마지막 자리가 다를 수 있음).
 - `scv_4m` p50: 4:00 전에 끝난 판은 0(`test_table.py`). `g3.py` 방식(그런 판 제외)은 JSON `scv_4m_p50_known`.
 
 ## 비교
@@ -323,11 +336,13 @@
 [s041]: ../spec/2026_10_15_22_24_041-imitation-learning.md
 [s042]: ../spec/2026_10_15_22_24_042-rl-training.md
 [s044]: ../spec/2026_11_14_08_18_044-self-game-distillation.md
+[s045]: ../spec/2026_11_20_09_12_045-scaleup-b-patch-lineage.md
 [s050]: ../spec/2026_10_15_22_24_050-evaluation.md
 [s051]: ../spec/2026_11_12_12_39_051-branch-games.md
 [s052]: ../spec/2026_11_13_17_19_052-ops-metrics.md
 [amb]: ../spec/README.md
 [checkpoint1]: ../report/release/2026_11_08_12_21_checkpoint1.md
 [checkpoint1_rl]: ../report/release/2026_11_08_13_35_checkpoint1_rl.md
+[spatial_ablation]: ../report/investigation/2026_11_19_23_00_spatial_ablation.md
 [jepa_survey]: ../report/survey/2026_11_08_19_26_jepa_survey.md
 [commands]: commands.md

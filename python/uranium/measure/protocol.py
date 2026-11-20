@@ -59,9 +59,19 @@ def check_metric(lin: dict, pt: dict, metric: str) -> dict:
     return m
 
 
+def check_lineage_point(lin: dict, lineage: str, pt: dict) -> None:
+    only = pt.get("lineages")
+    if only and lineage not in only:
+        raise Refused(f"point {pt['id']} is a point of lineage {', '.join(only)} only (lineage.toml lineages)")
+    pts = lin["lineage"][lineage].get("points")
+    if pts is not None and pt["id"] not in pts:
+        raise Refused(f"lineage {lineage} has the points {', '.join(pts)} only (lineage.toml points)")
+
+
 def check_new_measurement(lin: dict, lineage: str, metric: str, pt: dict) -> None:
     if lineage not in lin["lineage"]:
         raise Refused(f"no lineage {lineage!r}")
+    check_lineage_point(lin, lineage, pt)
     no_counterpart(lineage, pt)
     why = lin["metric"].get(metric, {}).get("not_measured", {}).get(lineage)
     if why:
@@ -90,6 +100,7 @@ def no_counterpart(lineage: str, pt: dict) -> None:
 def check_checkpoint(lin: dict, lineage: str, pt: dict, checkpoint: str) -> None:
     if lineage not in lin["lineage"]:
         raise Refused(f"no lineage {lineage!r}")
+    check_lineage_point(lin, lineage, pt)
     if lineage == "ck1":
         no_counterpart(lineage, pt)
         if checkpoint.replace("\\", "/").rstrip("/") != pt["ck1_checkpoint"] and checkpoint_sha256(checkpoint) != checkpoint_sha256(pt["ck1_checkpoint"]):
@@ -319,7 +330,13 @@ def diag_out(lin: dict, metric: str, checkpoint: str) -> str:
     return diag_metric(lin, metric)["output"].replace("<run>", run).replace("<ckpt>", ck)
 
 
-def cue_commands(lin: dict, name: str, ckpt: str, out: Path, data: list[str], py: str = "python", dump: Path | None = None) -> list[list[str]]:
+def probe_stages(lin: dict, name: str, lineage: str | None = None) -> list[str]:
+    drop = set(lin["lineage"].get(lineage, {}).get("cue_drop_stages", [])) if lineage else set()
+    return [x for x in cue_set(lin, name)["probes"]["stages"] if x not in drop]
+
+
+def cue_commands(lin: dict, name: str, ckpt: str, out: Path, data: list[str], py: str = "python", dump: Path | None = None,
+                 lineage: str | None = None) -> list[list[str]]:
     m = diag_metric(lin, "cue_diag")
     s = cue_set(lin, name)
     d, p = s["dump"], s["probes"]
@@ -334,7 +351,7 @@ def cue_commands(lin: dict, name: str, ckpt: str, out: Path, data: list[str], py
     if d["cf"]:
         cmd += ["--cf", "--cf-starts", ";".join(f"{r}:{a:g},{b:g}" for r, (a, b) in d["cf_starts"].items())]
     cmd += ["--out", str(dump)]
-    cmds = [cmd, [py, "-m", "uranium", "diag", "probes", str(dump), "--races", ",".join(p["races"]), "--stages", ",".join(p["stages"]), "--gain", p["gain"],
+    cmds = [cmd, [py, "-m", "uranium", "diag", "probes", str(dump), "--races", ",".join(p["races"]), "--stages", ",".join(probe_stages(lin, name, lineage)), "--gain", p["gain"],
                   "--boot", str(p["boot"]), "--cap", str(p["cap"]), "--seed", str(p["seed"]), "--device", "cpu", "--out", str(out / "probes.json")]]
     if "intervene" in s:
         iv = s["intervene"]
@@ -642,7 +659,8 @@ def cmd_diag(a) -> None:
     cmds = []
     if "cue_diag" in metrics:
         for name in diag_metric(lin, "cue_diag")["sets"]:
-            cmds += cue_commands(lin, name, ck, out / name, set_data(lin, name, shared, create=a.run and a.part != "cpu"), py, dump=local / name / "dump")
+            cmds += cue_commands(lin, name, ck, out / name, set_data(lin, name, shared, create=a.run and a.part != "cpu"), py, dump=local / name / "dump",
+                                 lineage=a.lineage)
             cmds.append([COPY, str(local / name / "dump"), str(out / name / "dump")])
             cmds.append(summary_command(lin, pt, name, out / name, py))
     log_sha = None
@@ -1009,7 +1027,7 @@ def cmd_bc_eval(a) -> None:
     else:
         raise Refused(f"metric {a.metric} is not teacher-forced")
     print(" ".join(args))
-    print(f"# pinned: backend {m['backend']} ({ec.PRECISION[m['backend']]}); checkpoint sha256 {checkpoint_sha256(a.checkpoint)}; git {git_state()['commit']}")
+    print(f"# pinned: backend {m['backend']} ({m.get('precision') or ec.PRECISION[m['backend']]}); checkpoint sha256 {checkpoint_sha256(a.checkpoint)}; git {git_state()['commit']}")
 
 
 def bc_eval_args(m: dict, checkpoint: str, out: str | None = None, py: str = "python") -> list[str]:
@@ -1022,6 +1040,8 @@ def bc_eval_args(m: dict, checkpoint: str, out: str | None = None, py: str = "py
     if m.get("seed") is not None:
         args += ["--seed", str(m["seed"])]
     args += ["--backend", m["backend"], "--config", m["config"]]
+    if m.get("precision"):
+        args += ["--precision", m["precision"]]
     args += [str(x) for x in m.get("extra_args", [])]
     if out:
         args += ["--out", out]
@@ -1058,6 +1078,18 @@ def cmd_check_bc_eval(a) -> None:
         raise SystemExit(f"MISMATCH {a.output}: {got} != pinned {want}")
     if "--bunker-before" in [str(x) for x in m.get("extra_args", [])] and "bunker_before" not in d:
         print(f"WARNING {a.output}: no `bunker_before` (run without --bunker-before 5760): regression gate check 3a will be MISSING")
+    if m.get("precision") and d.get("precision") != m["precision"]:
+        raise SystemExit(f"MISMATCH {a.output}: precision {d.get('precision')!r} != pinned {m['precision']!r}")
+    if m.get("loc_groups"):
+        g = d.get("target_loc_groups")
+        if not isinstance(g, dict) or not set(m["loc_groups"]) <= set(g):
+            raise SystemExit(f"MISMATCH {a.output}: no `target_loc_groups` with {', '.join(m['loc_groups'])} (bc-eval before 045-R7)")
+        for k in m["loc_groups"]:
+            if not (g[k] or {}).get("steps"):
+                raise SystemExit(f"MISMATCH {a.output}: `target_loc_groups.{k}` has no scored step")
+        print(f"{a.output}: {a.metric} location NLL {g['all']['nll']:.4f}, within 4 cells {g['all']['within4']:.4f}, "
+              f"build exact {g['build']['exact']:.4f}, rally distance {g['rally']['err_mean']:.3f} (steps {g['all']['steps']})")
+        return
     field = m.get("requires_field")
     if field:
         per = d.get(field)
@@ -1085,6 +1117,7 @@ def cmd_list(a) -> None:
     for p in lin["point"]:
         t1 = f"  T1 on {'/'.join(p['t1_platforms'])}" if p.get("t1_platforms") else ""
         t1 += f"  ck1 supplement {','.join(p['ck1_supplement'])}" if p.get("ck1_supplement") else ""
+        t1 += f"  lineage {','.join(p['lineages'])} only, compared with {','.join(p.get('compare', []))}" if p.get("lineages") else ""
         print(f"{p['id']:8} {p['family']:3} {p.get('ck1_checkpoint', '- (no Checkpoint 1 counterpart)'):48} metrics {','.join(p['metrics'])}  optional {','.join(p.get('optional', []))}{t1}")
 
 
