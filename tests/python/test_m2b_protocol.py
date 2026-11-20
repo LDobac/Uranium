@@ -22,25 +22,36 @@ def patch_outputs(out: Path) -> Path:
                 if "metrics" in t:
                     t["metrics"] = {k: v for k, v in t["metrics"].items() if not k.startswith("sp_pool")}
         (d / "probes.json").write_text(json.dumps(pr), encoding="utf-8")
-    log = spatial_logs.not_measurable(Path("m2b-teacher-t2.log"), 8, LIN["metric"]["dead_channels"]["from_update"], 3258)
-    (out / protocol.TRAIN_LOG).write_text(json.dumps(log), encoding="utf-8")
-    return record(out)
+    return record(out, metrics=("cue_diag",), lineage="m2b")
 
 
 def test_patch_model_diag_outputs_accepted_045_r6(tmp_path, monkeypatch):
     fake_game_order(monkeypatch)
+    for name in CUE["sets"]:
+        assert "sp_pool" not in CUE[name]["report"]["stages"]
     out = patch_outputs(tmp_path / "d")
     assert protocol.check_diag(LIN, "cue_diag", out) == []
     assert protocol.check_diag(LIN, "dead_channels", out) == []
-    log = json.loads((out / protocol.TRAIN_LOG).read_text(encoding="utf-8"))
-    (out / protocol.TRAIN_LOG).write_text(json.dumps({**log, "spatial_patch": 0}), encoding="utf-8")
-    assert any("not_measurable without a patch spatial path" in p for p in protocol.check_diag(LIN, "dead_channels", out))
-    (out / protocol.TRAIN_LOG).write_text(json.dumps({**log, "from_update": 1}), encoding="utf-8")
-    assert any("from_update 1, pinned" in p for p in protocol.check_diag(LIN, "dead_channels", out))
+    md = "\n".join(diag_table.markdown(LIN, {"m2b-t2": diag_table.folder_table(LIN, out, ["cue_diag", "dead_channels"])}))
+    assert "| m2b-t2 | 측정 대상 없음 (no targets): no statistics on the patch spatial path (032-R25 scope, 045-R6 5) |" in md
+    assert "none from update" not in md and "not measured (no training-log statistics)" not in md
+    log = spatial_logs.not_measurable(Path("m2b-teacher-t2.log"), 8, LIN["metric"]["dead_channels"]["from_update"], 3258)
     (out / protocol.TRAIN_LOG).write_text(json.dumps(log), encoding="utf-8")
+    assert protocol.check_diag(LIN, "dead_channels", out) == []
     md = "\n".join(diag_table.markdown(LIN, {"m2b-t2": diag_table.folder_table(LIN, out, ["cue_diag", "dead_channels"])}))
     assert "| m2b-t2 | 측정 대상 없음 (no targets): the patch spatial path (spatial_patch = 8) has no dead-channel targets" in md
-    assert "none from update" not in md
+    for edit, want in (({"spatial_patch": 0}, "not_measurable without a patch spatial path"), ({"from_update": 1}, "from_update 1, pinned")):
+        (out / protocol.TRAIN_LOG).write_text(json.dumps({**log, **edit}), encoding="utf-8")
+        assert any(want in p for p in protocol.check_diag(LIN, "dead_channels", out))
+    (out / protocol.TRAIN_LOG).write_text(json.dumps(log), encoding="utf-8")
+    for lineage in ("m2", "ck1"):
+        record(out, lineage=lineage)
+        assert any("not_measurable" in p and f"lineage {lineage!r}, which measures dead channels" in p for p in protocol.check_diag(LIN, "dead_channels", out))
+    (out / protocol.TRAIN_LOG).unlink()
+    record(out, metrics=("cue_diag",), lineage="ck1")
+    assert any("dead_channels not among the measured metrics" in p for p in protocol.check_diag(LIN, "dead_channels", out))
+    res = diag_table.folder_table(LIN, out, ["cue_diag"]) | {"train_log": diag_table._load(out / protocol.TRAIN_LOG)}
+    assert "| ck1 | not measured (no training-log statistics) |" in "\n".join(diag_table.markdown(LIN, {"ck1": res}))
 
 
 def fake_set_data(lin, name, shared=None, work=None, create=True):

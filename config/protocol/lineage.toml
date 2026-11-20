@@ -226,6 +226,7 @@ kind = "diag_train_log"
 description = "032-R25 / 041-R25 dead-channel statistics from the run's training-log sp_* records (tools/eval/spatial_logs.py): max dead share per ReLU output layer, max const S8 / s_pool, min positive share, alarms"
 output = "artifacts/diag/<run>__<ckpt>"
 not_measured = { ck1 = "not measured (no training-log statistics, AMB-050-5)", m2b = "no statistics on the patch spatial path (032-R25 scope, 045-R6 5)" }
+no_targets = ["m2b"]
 from_update = 600
 layers = ["stem", "c0", "c1", "c2", "c3", "r0", "r1", "r2", "r3", "r4", "r5"]
 

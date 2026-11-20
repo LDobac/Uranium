@@ -534,7 +534,12 @@ def unpinned(lin: dict, out: Path) -> list[str]:
     return notes
 
 
-def check_train_log(lin: dict, out: Path) -> list[str]:
+def no_targets(lin: dict, metric: str, lineage: str | None) -> str | None:
+    m = lin["metric"].get(metric, {})
+    return (m.get("not_measured") or {}).get(lineage) if lineage in m.get("no_targets", []) else None
+
+
+def check_train_log(lin: dict, out: Path, lineage: str | None = None) -> list[str]:
     m = diag_metric(lin, "dead_channels")
     problems: list[str] = []
     r = _load(out / TRAIN_LOG, problems)
@@ -544,6 +549,8 @@ def check_train_log(lin: dict, out: Path) -> list[str]:
         if r.get("not_measurable"):
             if not r.get("spatial_patch"):
                 problems.append(f"{TRAIN_LOG}: not_measurable without a patch spatial path (spatial_patch {r.get('spatial_patch')!r})")
+            if not no_targets(lin, "dead_channels", lineage):
+                problems.append(f"{TRAIN_LOG}: not_measurable ({r['not_measurable']}) in a folder of lineage {lineage!r}, which measures dead channels")
             return problems
         if not r.get("sp_records_from"):
             problems.append(f"{TRAIN_LOG}: no sp_* record from update {m['from_update']} (a run without [monitor] spatial_every?)")
@@ -557,10 +564,11 @@ def check_diag(lin: dict, metric: str, out: Path, sha: str | None = None) -> lis
     m = diag_metric(lin, metric)
     problems: list[str] = []
     rec = _load(out / DIAG_RECORD, problems)
+    skip = no_targets(lin, metric, (rec or {}).get("lineage"))
     if rec is not None:
         if not rec.get("finished"):
             problems.append(f"{DIAG_RECORD}: not finished (an attempt in progress or failed)")
-        if metric not in (rec.get("metrics") or []):
+        if metric not in (rec.get("metrics") or []) and not skip:
             problems.append(f"{DIAG_RECORD}: {metric} not among the measured metrics {rec.get('metrics')}")
         if not (rec.get("git") or {}).get("commit"):
             problems.append(f"{DIAG_RECORD}: no git commit")
@@ -570,7 +578,9 @@ def check_diag(lin: dict, metric: str, out: Path, sha: str | None = None) -> lis
             problems.append(f"{DIAG_RECORD} checkpoint_sha256: {rec['checkpoint_sha256']!r}, pinned {sha!r}")
         sha = sha or rec.get("checkpoint_sha256")
     if m["kind"] == "diag_train_log":
-        return problems + check_train_log(lin, out)
+        if skip and not (out / TRAIN_LOG).is_file():
+            return problems
+        return problems + check_train_log(lin, out, (rec or {}).get("lineage"))
     for name in m["sets"]:
         problems += check_cue_set(lin, name, out / name, sha)
     return problems

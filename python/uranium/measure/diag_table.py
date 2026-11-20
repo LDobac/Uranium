@@ -77,6 +77,9 @@ def folder_table(lin: dict, out: Path, metrics: list[str], check: bool = True) -
                 res["intervention"][name] = None if iv is None else intervention_rows(lin, name, iv)
     if "dead_channels" in metrics:
         res["train_log"] = _load(out / protocol.TRAIN_LOG)
+        why = protocol.no_targets(lin, "dead_channels", (rec or {}).get("lineage"))
+        if why and res["train_log"] is None:
+            res["train_log"] = {"not_measurable": why}
     return res
 
 

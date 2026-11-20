@@ -50,7 +50,7 @@
   - `s2e2b`(run `m2b-s2e2` 마지막): test, val 500(종족별), 위치 지표(`val_loc`), 단서 진단. 비교 `m2-s2e2`.
   - `t1b`(run `m2b-teacher-t1` 마지막)·`t2b`(run `m2b-teacher-t2` 마지막): `t2`와 같은 표 + `val_loc`. 비교 `t1b`↔t1(`t1` 지점에 없는 test·T1은 같은 체크포인트인 `D` 지점 값), `t2b`↔t2.
   - Checkpoint 1(`r1`)은 기존 수치. 지점 `compare` 필드에 비교 대상(`<줄기>:<지점>`), `protocol.py list`에 표시.
-  - 050-R10 게이트 미적용·기록만, 판정 문턱 없음. 단서 진단은 `sp_pool` 단계를 빼고 probes(`[lineage.m2b] cue_drop_stages`). 죽은 채널 통계 없음(`dead_channels` 거부 → `protocol.py diag --lineage m2b`는 `--metrics cue_diag`를 줌).
+  - 050-R10 게이트 미적용·기록만, 판정 문턱 없음. 단서 진단은 `sp_pool` 단계를 빼고 probes(`[lineage.m2b] cue_drop_stages`). 죽은 채널 통계 없음(`dead_channels` 거부 → `protocol.py diag --lineage m2b`는 `--metrics cue_diag`를 줌. `check-diag`·`diag_table.py`는 `dead_channels`를 `no_targets` 줄기로 보고 "측정 대상 없음" 행, 패치 체크포인트의 `spatial_log.json`(`not_measurable`)도 이 줄기에서만 받음).
 - `metrics` = Checkpoint 1 경로에서 잰 지표(바로 비교 가능). `optional` = Checkpoint 1 값 없는 지표. 그중 050-R9 지점 표가 요구하는 칸은 `ck1_supplement`로 Checkpoint 1 쪽 보충 측정 가능.
 
 | 지표 | 내용 | 고정 조건 |
