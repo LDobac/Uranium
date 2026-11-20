@@ -1,3 +1,4 @@
+import contextlib
 import os
 import shutil
 import subprocess
@@ -8,10 +9,19 @@ import torch
 
 from uranium.env import env_choice
 
+ENTITY_ATTN = "URANIUM_ENTITY_ATTN"
 ENTITY_ATTN_MODES = ("torch", "fused")
+REQUESTED = "requested:"
 MASKED = -1e9
+WIN_BUILD_ENV = {"TORCH_DONT_CHECK_COMPILER_ABI": "1"}
 _HERE = Path(__file__).resolve().parent
 _LOADED: dict = {}
+_ERRORS: dict = {}
+_WARNED: set = set()
+
+
+class KernelError(RuntimeError):
+    pass
 
 
 def build_dir(name: str) -> Path:
@@ -39,11 +49,32 @@ def msvc_env() -> None:
             os.environ[k] = v
 
 
-def warm(device) -> None:
-    if torch.device(device).type != "cuda":
+@contextlib.contextmanager
+def build_env():
+    if sys.platform != "win32":
+        yield
         return
-    if env_choice("URANIUM_ENTITY_ATTN", ENTITY_ATTN_MODES, "torch") == "fused":
-        load("attn_bias")
+    old = {k: os.environ.get(k) for k in WIN_BUILD_ENV}
+    os.environ.update(WIN_BUILD_ENV)
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def build(name: str):
+    from torch.utils.cpp_extension import load as cpp_load
+
+    msvc_env()
+    if torch.version.hip and not os.environ.get("PYTORCH_ROCM_ARCH") and torch.cuda.is_available():
+        os.environ["PYTORCH_ROCM_ARCH"] = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
+    win = ["/Zc:preprocessor"] if sys.platform == "win32" else []
+    with build_env():
+        return cpp_load(name=f"uranium_{name}", sources=[str(_HERE / f"{name}.cu")], extra_cflags=["-O3", *win], extra_cuda_cflags=["-O3", *(f"-Xcompiler={f}" for f in win)], build_directory=str(build_dir(name)), verbose=False)
 
 
 def load(name: str):
@@ -51,14 +82,62 @@ def load(name: str):
         return _LOADED[name]
     mod = None
     try:
-        from torch.utils.cpp_extension import load as cpp_load
-
-        msvc_env()
-        if torch.version.hip and not os.environ.get("PYTORCH_ROCM_ARCH") and torch.cuda.is_available():
-            os.environ["PYTORCH_ROCM_ARCH"] = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
-        win = ["/Zc:preprocessor"] if sys.platform == "win32" else []
-        mod = cpp_load(name=f"uranium_{name}", sources=[str(_HERE / f"{name}.cu")], extra_cflags=["-O3", *win], extra_cuda_cflags=["-O3", *(f"-Xcompiler={f}" for f in win)], build_directory=str(build_dir(name)), verbose=False)
+        mod = build(name)
     except Exception as e:  # noqa: BLE001
-        print(f"[kernels] {name}: not built ({str(e).splitlines()[0][:200]}), using the PyTorch reference", file=sys.stderr, flush=True)
+        lines = str(e).strip().splitlines()
+        _ERRORS[name] = f"{type(e).__name__}: {lines[0][:300] if lines else ''}"
     _LOADED[name] = mod
     return mod
+
+
+def load_error(name: str) -> str | None:
+    return _ERRORS.get(name)
+
+
+def entity_attn_requested() -> str:
+    return env_choice(ENTITY_ATTN, ENTITY_ATTN_MODES, "torch")
+
+
+def entity_attn_unsupported(net) -> str | None:
+    from uranium.kernels.attention import HEAD_DIM, MAX_TABLE_ROWS
+
+    c = net.cfg.entity
+    width = c.d_model // c.heads
+    rows = net.entity.bias_table.shape[0] + net.cfg.variant.tokens()
+    if width != HEAD_DIM:
+        return f"head width {width} != {HEAD_DIM}"
+    if rows > MAX_TABLE_ROWS:
+        return f"distance bias table rows {rows} > {MAX_TABLE_ROWS}"
+    return None
+
+
+def on_gpu(device) -> bool:
+    return torch.device(device).type == "cuda"
+
+
+def check(net, device) -> str:
+    if entity_attn_requested() != "fused" or not on_gpu(device):
+        return "torch"
+    why = entity_attn_unsupported(net)
+    if why is not None:
+        if why not in _WARNED:
+            _WARNED.add(why)
+            print(f"[kernels] WARNING: attn_bias does not support this model ({why}): {ENTITY_ATTN}=fused runs the PyTorch reference (060-R1 ⑥)", file=sys.stderr, flush=True)
+        return "torch"
+    if load("attn_bias") is None:
+        raise KernelError(f"[kernels] attn_bias: {ENTITY_ATTN}=fused is requested on {'ROCm' if torch.version.hip else 'CUDA'} but the kernel did not build or load ({load_error('attn_bias')}). Fix the build or set {ENTITY_ATTN}=torch to run the PyTorch reference (060-R1 ⑤)")
+    return "fused"
+
+
+def meta(net, device) -> list[str]:
+    from uranium.device import impl_settings
+
+    used = check(net, device)
+    want = os.environ.get(ENTITY_ATTN, "")
+    entry = f"{ENTITY_ATTN}={used}"
+    out = [entry if s.startswith(f"{ENTITY_ATTN}=") else s for s in impl_settings()]
+    if entry not in out:
+        out.append(entry)
+    if want and want != used:
+        out.append(f"{REQUESTED}{ENTITY_ATTN}={want}")
+    return out

@@ -153,7 +153,7 @@ def rl_main(a) -> int:
 
     import torch
 
-    from uranium import _core, ckpt
+    from uranium import _core, ckpt, kernels
     from uranium.bench.report import environment
     from uranium.bench.rl import OFF, SyntheticSegments, markdown, run_learner
     from uranium.device import configure, impl_settings, resolve
@@ -173,11 +173,13 @@ def rl_main(a) -> int:
         cfg["lanes"] = a.lanes
     lo, hi = (int(x) for x in a.entities.split(":"))
     net = batch = None
+    switches = impl_settings()
     if not a.isolate:
         net, _ = ckpt.load_model(Path(a.checkpoint), device, adjust=ckpt.no_dropout)
+        switches = kernels.meta(net, device)
         batch = SyntheticSegments(net, cfg["lanes"], cfg["seq_len"], (lo, hi), a.templates, a.seed)
         net = net.cpu()
-    env = environment(backend, precision, device) | {"checkpoint": Path(a.checkpoint).name, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entities": a.entities, "switches": " ".join(impl_settings())}
+    env = environment(backend, precision, device) | {"checkpoint": Path(a.checkpoint).name, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entities": a.entities, "switches": " ".join(switches)}
     cmd = "python -m uranium bench " + " ".join(sys.argv[2:])
     runs: list = []
     md = ""

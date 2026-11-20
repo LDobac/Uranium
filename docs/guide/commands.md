@@ -89,7 +89,8 @@ cp -n <shared>/datasets/replays/build/maps/*.toml <URANIUM_MAPS_DIR>/     # Wind
 | `URANIUM_ADAM`, `URANIUM_COMPILE_DYNAMIC`, `URANIUM_COMPILE_RNG`, `URANIUM_INFER_STREAM` | 기본값 유지(`INFER_STREAM=own`은 Linux ROCm 호스트에서 멈춤, `COMPILE_DYNAMIC=on`은 재컴파일 못 없앰) | - | - |
 
 - 장비별 기본값 다시 고르기(모델 구조 변경 뒤 등): `python -m uranium bench bc --groups 1 --updates 12`를 스위치 값만 바꿔 비교, 손실 동등성은 `bench loss`(30 update).
-- 직접 작성 커널: 첫 사용 때 빌드해 `URANIUM_KERNEL_DIR`(기본 `~/.cache/uranium/kernels`). Windows는 `cl`이 PATH에 없으면 최신 Visual Studio vcvars64를 불러옴.
+- 직접 작성 커널: 첫 사용 때 빌드해 `URANIUM_KERNEL_DIR`(기본 `~/.cache/uranium/kernels`). Windows는 `cl`이 PATH에 없으면 최신 Visual Studio vcvars64를 불러옴. 콘솔 코드 페이지(65001·949)와 무관하게 로드(로드 동안 torch 컴파일러 ABI 검사 끔).
+- 커널 시작 검사([060-R1](../spec/2026_10_15_22_24_060-infra.md) ⑤~⑧): GPU 진입점(BC·RL·추론 서버·`serve`·SC:R·`bc-eval`·증류·진단·측정·벤치)은 모델을 만든(불러온) 직후 커널을 불러 본다. `URANIUM_ENTITY_ATTN=fused`(백엔드 기본값 포함)인데 빌드·로드가 실패하면 시작 오류(`[kernels] attn_bias: ... did not build or load`). 컴파일러(MSVC·nvcc·hipcc)가 없는 GPU 호스트나 일부러 기준 구현을 쓸 때는 `.env`에 `URANIUM_ENTITY_ATTN=torch`. 모델 모양이 커널 밖(head 폭 ≠ 32, bias 표 행 > 64)이면 경고 한 줄 뒤 기준 구현. 체크포인트 메타 `kernels`에는 실제 쓴 구현(`URANIUM_ENTITY_ATTN=fused|torch`)을 쓰고, 설정값과 다르면 `requested:URANIUM_ENTITY_ATTN=<설정값>`을 덧붙임. `bench bc` JSON 그룹의 `kernels`도 같은 형식.
 
 ### 호스트 메모리 설정 (`.env`)
 - CUDA 호스트(RAM을 평소 작업과 나눠 씀): `URANIUM_BC_MICRO_LANES=2`, `URANIUM_BC_PREFETCH=1`, `URANIUM_BC_PACK_BATCH=1`, `URANIUM_BC_FILE_AHEAD=2`.

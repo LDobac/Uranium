@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 from safetensors.torch import load_file, save_file
 
+from uranium import kernels
 from uranium.model import UraniumNet, UraniumNetConfig
 
 WEIGHTS_FILE = "model.safetensors"
@@ -90,7 +91,9 @@ def load_model(dir: Path, device="cpu", adjust=None, graft=None) -> tuple[Uraniu
         missing = [k for k in missing if not k.startswith(SPATIAL_NORM_PREFIX)]
     if missing or unexpected:
         raise ValueError(f"{dir}: missing tensors {missing}, unexpected {unexpected}")
-    return net.to(device), meta
+    net = net.to(device)
+    kernels.check(net, device)
+    return net, meta
 
 
 def policy_version(dir: Path) -> str:

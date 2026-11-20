@@ -11,7 +11,7 @@ import torch
 
 from uranium import ckpt, kernels
 from uranium.clip import clip_global_norm
-from uranium.device import adam_impl, autocast, compile_graphs, compiled, impl_settings, mark_dynamic
+from uranium.device import adam_impl, autocast, compile_graphs, compiled, mark_dynamic
 from uranium.model import UraniumNet, to_obs
 from uranium.model.auxiliary import aux_loss, jepa_std
 from uranium.model.config import AUX_JEPA_SLOTS, CORES, VariantConfig, aux_adam_eps, check_aux, new_net_config, size_mismatch
@@ -74,7 +74,7 @@ class BcTrainer:
         self._ph: dict = defaultdict(float)
         self._mark = 0.0
         self._collate = ThreadPoolExecutor(max_workers=1, thread_name_prefix="collate")
-        kernels.warm(device)
+        kernels.check(self.net, device)
         self.forward_seq = compiled(self.net.forward_seq)
         self.graphs = self.forward_seq is not self.net.forward_seq and compile_graphs()
         has_open, weighted = self.net.value.open is not None, cfg["value"].get("win_open") is not None
@@ -291,4 +291,4 @@ class BcTrainer:
         d.mkdir(parents=True, exist_ok=True)
         ckpt.save_model(d, self.net)
         ckpt.save_optimizer(d, ckpt.OPTIM_MAIN, self.net, self.opt)
-        ckpt.save_meta(d, self.net.cfg, json.loads(train_json), self.precision, impl_settings())
+        ckpt.save_meta(d, self.net.cfg, json.loads(train_json), self.precision, kernels.meta(self.net, self.device))

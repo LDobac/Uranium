@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from uranium import kernels
 from uranium.bench.inputs import random_obs, sampled_labels
 from uranium.bench.timing import Timing, measure, peak_gib, reset_peak
 from uranium.device import autocast
@@ -277,6 +278,7 @@ def model(cache: dict, kind: str, dev, seed: int = 0, variant: str | None = None
             cfg.variant = VARIANTS[variant]
         torch.manual_seed(seed)
         cache[key] = UraniumNet(cfg, action_columns()).to(dev)
+        kernels.check(cache[key], dev)
     return cache[key]
 
 

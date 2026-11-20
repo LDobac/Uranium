@@ -134,7 +134,7 @@ class InferenceServer(threading.Thread):
             net, _ = ckpt.load_model(broker.dir, device)
         self.net = net.to(device).eval()
         self.temp = broker.temp
-        kernels.warm(device)
+        kernels.check(self.net, device)
         self.act_fn = compiled(self.net.act, "URANIUM_INFER_COMPILE")
         graph_max = int(os.environ.get("URANIUM_INFER_GRAPH_MAX_BATCH", "") or 0)
         self.graphed = GraphedAct(self.act_fn, device, precision, graph_max) if device.type == "cuda" and env_choice("URANIUM_INFER_GRAPH", INFER_GRAPH_MODES, "off") == "on" else None

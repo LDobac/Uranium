@@ -233,8 +233,8 @@ class Learner:
         self.compiling = self.forward_seq is not fns[0]
         self.graphs = self.compiling and compile_graphs(RL_COMPILE)
         self._visits: dict = defaultdict(int)
-        if self.compiling:
-            kernels.warm(device)
+        for m in (self.net, *self.refs):
+            kernels.check(m, device)
         if self.graphs and self.net.outer is not None:
             print(f"[rl] WARNING: {RL_COMPILE} records one CUDA graph per lane count, entity width, location rows and outer phase lengths; RL segments start at any decision, so new shapes keep coming (032 2.7)", file=sys.stderr, flush=True)
         self.update_count = update

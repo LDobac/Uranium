@@ -94,9 +94,9 @@ class EntityEncoder(nn.Module):
     def use_fused(self, x, table) -> bool:
         if env_choice("URANIUM_ENTITY_ATTN", ENTITY_ATTN_MODES, "torch") != "fused" or x.device.type != "cuda":
             return False
-        from uranium.kernels.attention import HEAD_DIM, available
+        from uranium.kernels.attention import HEAD_DIM, MAX_TABLE_ROWS, require
 
-        return x.shape[-1] // self.heads == HEAD_DIM and table.shape[0] <= 64 and available(x.device)
+        return x.shape[-1] // self.heads == HEAD_DIM and table.shape[0] <= MAX_TABLE_ROWS and require(x.device)
 
     def distance_bias(self, idx, table):
         mode = env_choice("URANIUM_BIAS_GRAD", BIAS_GRAD_MODES, "embedding")

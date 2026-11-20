@@ -2,9 +2,10 @@ import math
 
 import torch
 
-from uranium.kernels import MASKED, load
+from uranium.kernels import ENTITY_ATTN, MASKED, KernelError, load, load_error
 
 HEAD_DIM = 32
+MAX_TABLE_ROWS = 64
 
 
 def reference(q, k, v, bucket, table, key_ok, scale: float):
@@ -65,6 +66,12 @@ def available(device) -> bool:
     if torch.device(device).type != "cuda":
         return False
     return _mod() is not None
+
+
+def require(device) -> bool:
+    if available(device):
+        return True
+    raise KernelError(f"[kernels] attn_bias: {ENTITY_ATTN}=fused but the kernel is not loaded ({load_error('attn_bias') or 'not a GPU tensor'}); the entry point start check should have stopped this run (060-R1 ⑦)")
 
 
 def fused(q, k, v, bucket_u8, table, key_ok):

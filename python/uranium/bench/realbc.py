@@ -7,6 +7,7 @@ import time
 
 import torch
 
+from uranium import kernels
 from uranium.bench.timing import peak_gib, peak_rss_gib, reset_peak
 
 LOSS_KEYS = ("total", "action", "delay", "queued", "selected", "target_unit", "target_loc", "value", "win_open")
@@ -56,7 +57,7 @@ def run_group(a, group: int, device: torch.device, precision: str, log=print) ->
         "median_s": statistics.median(walls) if walls else None, "mean_s": statistics.fmean(walls) if walls else None,
         "p95_s": sorted(walls)[min(len(walls) - 1, math.ceil(0.95 * len(walls)) - 1)] if walls else None,
         "wait_median_s": statistics.median(x["wait_s"] for x in updates[1:]) if walls else None,
-        "peak_gib": peak_gib(device), "peak_rss_gib": peak_rss_gib(),
+        "peak_gib": peak_gib(device), "peak_rss_gib": peak_rss_gib(), "kernels": kernels.meta(t.net, device),
     }
     if a.ops:
         b = feeder.next()

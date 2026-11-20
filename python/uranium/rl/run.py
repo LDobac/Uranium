@@ -36,9 +36,8 @@ def add_parser(sub) -> None:
 
 class Learners:
     def __init__(self, cfg: dict, bc_dir: str, init: str | None, resume: str | None, device, precision: str, algo: str, logs: Path, max_batch: int, max_wait_ms: int):
-        from uranium import _core, ckpt
+        from uranium import _core, ckpt, kernels
         from uranium.agent.infer import InferenceServer
-        from uranium.device import impl_settings
         from uranium.rl.learner import Learner
 
         self.device, self.precision = device, precision
@@ -61,7 +60,7 @@ class Learners:
             d = logs / "infer" / name
             d.mkdir(parents=True, exist_ok=True)
             ckpt.save_model(d, l.net)
-            ckpt.save_meta(d, l.net.cfg, {"agent": name, "update": update}, precision, impl_settings())
+            ckpt.save_meta(d, l.net.cfg, {"agent": name, "update": update}, precision, kernels.meta(l.net, device))
             b = _core.Broker(str(d), "stochastic", max_batch=max_batch, max_wait_ms=max_wait_ms, warmup_entities=_n_max())
             s = InferenceServer(b, device, precision, net=served)
             s.swap(l.net.state_dict(), update)
@@ -104,8 +103,8 @@ class Learners:
             self.learners[i].reset_to_bc()
 
     def save(self, i: int, dir: str, train_json: str) -> None:
-        from uranium import ckpt
-        from uranium.device import DEVICE_LOCK, device_fatal_guard, impl_settings
+        from uranium import ckpt, kernels
+        from uranium.device import DEVICE_LOCK, device_fatal_guard
 
         d = Path(dir)
         d.mkdir(parents=True, exist_ok=True)
@@ -118,7 +117,7 @@ class Learners:
             train[START_KEY] = self.starts[i]
         if self.kl_reference is not None:
             train[KL_REFERENCE_KEY] = self.kl_reference
-        ckpt.save_meta(d, l.net.cfg, train, self.precision, impl_settings())
+        ckpt.save_meta(d, l.net.cfg, train, self.precision, kernels.meta(l.net, self.device))
 
     def snapshot_server(self, dir: str) -> tuple:
         from uranium import _core
