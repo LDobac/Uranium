@@ -627,8 +627,8 @@ lineages = ["m2b"]
 note = "scale-up B BC baseline (045-R6 1: the final checkpoint of m2b-s2e2), test and val 500 by race plus the 045-R7 location metrics; the 050-R10 gate is not applied, record only, no verdict threshold (user decision 2026-11-20)"
 run_pattern = "s2e2"
 compare = ["m2:s2e2", "ck1:r1"]
-metrics = ["test", "val500", "val500_race", "val_loc", "cue_diag"]
-optional = ["per_action", "ops", "rush_combat"]
+metrics = ["test", "val500", "val500_race", "val_loc"]
+optional = ["cue_diag", "per_action", "ops", "rush_combat"]
 
 [[point]]
 id = "t1b"

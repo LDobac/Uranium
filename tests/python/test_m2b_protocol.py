@@ -62,7 +62,7 @@ def test_m2b_lineage_points_045_r6():
     assert LIN["lineage"]["m2b"]["run_prefix"] == "m2b-" and LIN["lineage"]["m2b"]["points"] == list(M2B)
     s2e2b, t1b, t2b, t2 = (protocol.point(LIN, p) for p in (*M2B, "t2"))
     assert [p["id"] for p in LIN["point"] if p.get("lineages")] == list(M2B)
-    assert set(s2e2b["metrics"]) == {"test", "val500", "val500_race", "val_loc", "cue_diag"}
+    assert set(s2e2b["metrics"]) == {"test", "val500", "val500_race", "val_loc"} and "cue_diag" in s2e2b["optional"]
     for pt in (t1b, t2b):
         assert set(pt["metrics"]) == set(t2["metrics"]) - {"dead_channels"} | {"val_loc"} and pt["t1_platforms"] == t2["t1_platforms"]
         assert set(pt["optional"]) == set(t2["optional"])
