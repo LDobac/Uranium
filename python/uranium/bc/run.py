@@ -44,14 +44,16 @@ def main(a) -> int:
 
     from uranium.bc.trainer import BcTrainer
     from uranium.device import configure, resolve
-    from uranium.model.config import model_variant
+    from uranium.model.config import model_net
 
     backend, device, precision = resolve(a.backend)
     configure(backend, train=True)
-    variant = model_variant(a.config)
+    variant, sizes = model_net(a.config)
     if variant.any():
         print(f"[bc] [model] {variant} (032 §2.7)", flush=True)
-    make = functools.partial(_make, BcTrainer, a.core, device, precision, variant)
+    if sizes:
+        print(f"[bc] [net] {sizes} (032-R28)", flush=True)
+    make = functools.partial(_make, BcTrainer, a.core, device, precision, variant, sizes)
     end = _core.run_bc(
         make, a.config, stage=stage_of(a), out=a.out, run=a.run, take_over=a.take_over, take_over_if=a.take_over_if,
         datasets=a.dataset, shards=a.shards, steps=a.steps, resume=a.resume, init=a.init,
@@ -60,5 +62,5 @@ def main(a) -> int:
     return {"busy": EXIT_BUSY, "yielded": EXIT_YIELDED}.get(end, 0)
 
 
-def _make(cls, core, device, precision, variant, cfg_json, start, dir, entity_chunk):
-    return cls.make(cfg_json, start, None if dir is None else str(dir), entity_chunk, core, device, precision, variant)
+def _make(cls, core, device, precision, variant, sizes, cfg_json, start, dir, entity_chunk):
+    return cls.make(cfg_json, start, None if dir is None else str(dir), entity_chunk, core, device, precision, variant, sizes)

@@ -83,7 +83,7 @@ class OuterLstm(nn.Module):
         self.bias_hh = fixed_param((4 * hid,), seed + 3, k)
         self.tok = fixed_linear(hid, cfg.entity.d_model, seed + 4)
         self.tok_bias = fixed_param((1, cfg.entity.layers * cfg.entity.heads), seed + 5, 0.02, normal=True)
-        self.film = fixed_linear(hid, 2 * cfg.spatial.stem_channels, seed + 6)
+        self.film = fixed_linear(hid, 2 * (cfg.spatial.patch_dim if cfg.patch() else cfg.spatial.stem_channels), seed + 6)
         self.core_add = fixed_linear(hid, d_core_in, seed + 7)
         self.segment, self.hidden, self.d_core = segment, hid, d_core
 
@@ -222,7 +222,7 @@ class Variants(nn.Module):
             self.outer = OuterLstm(cfg, d_core_in, vc.outer, SEED + 0x40) if vc.outer > 0 else None
             self.bypass = HeadBypass(cfg, SEED_BYPASS) if vc.bypass else None
             self.core_skip = core_skip_linear(d_core_in, cfg.core.hidden) if vc.core_skip else None
-            d_y = d + cfg.spatial.pool
+            d_y = cfg.jepa_width()
             self.aux_priv = aux_priv_module(cfg.core.hidden, cfg.input.privileged, SEED_AUX_PRIV) if vc.aux_priv else None
             self.aux_jepa = aux_jepa_modules(cfg.core.hidden, d_y, vc.aux_jepa, seed_aux_jepa) if vc.aux_jepa else None
             self.spatial_norm = SpatialNorms(cfg.spatial, vc.spatial_norm) if vc.spatial_norm else None

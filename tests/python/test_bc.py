@@ -9,6 +9,7 @@ import torch
 from uranium import _core, ckpt
 from uranium.bc.trainer import BcTrainer
 from uranium.model import UraniumNet, UraniumNetConfig
+from uranium.model.config import net_sizes_of
 
 import testkit
 from testkit import bc_cfg, feeder, params_of
@@ -50,14 +51,14 @@ def test_resume_continues_bit_identically_061_r10(tiny_config, shards, tmp_path,
     a.states = []
     kept = [json.loads(a.train_batch(fa.next(), lr(s), s))["total"] for s in (3, 4)]
 
-    r = BcTrainer.make(json.dumps(cfg), "resume", str(tmp_path / "ck"), 0, kind.lower(), CPU, "f32")
+    r = BcTrainer.make(json.dumps(cfg), "resume", str(tmp_path / "ck"), 0, kind.lower(), CPU, "f32", sizes=net_sizes_of(a.net.cfg))
     fb = feeder(tiny_config, shards, restore=state)
     got = [json.loads(r.train_batch(fb.next(), lr(s), s))["total"] for s in (3, 4)]
     assert got == kept, "resumed updates differ from the run that kept going"
     pa, pr = params_of(a.net), params_of(r.net)
     assert all(torch.equal(pa[k], pr[k]) for k in pa)
 
-    c = BcTrainer.make(json.dumps(cfg), "init", str(tmp_path / "ck"), 0, kind.lower(), CPU, "f32")
+    c = BcTrainer.make(json.dumps(cfg), "init", str(tmp_path / "ck"), 0, kind.lower(), CPU, "f32", sizes=net_sizes_of(a.net.cfg))
     fc = feeder(tiny_config, shards, restore=state)
     assert [json.loads(c.train_batch(fc.next(), lr(s), s))["total"] for s in (3, 4)] != kept
 
@@ -74,7 +75,7 @@ def test_checkpoint_round_trip_061_ac5(tiny_config, shards, tmp_path):
     meta = ckpt.read_meta(tmp_path / "a")
     assert meta["framework"] == "pytorch" and meta["precision"] == "f32" and meta["config"]["value"]["win_open"]
 
-    r = BcTrainer.make(json.dumps(t.cfg), "resume", str(tmp_path / "a"), 0, "gtrxl", CPU, "f32")
+    r = BcTrainer.make(json.dumps(t.cfg), "resume", str(tmp_path / "a"), 0, "gtrxl", CPU, "f32", sizes=net_sizes_of(t.net.cfg))
     pa, pr = params_of(t.net), params_of(r.net)
     assert pa.keys() == pr.keys() and all(torch.equal(pa[k], pr[k]) for k in pa)
     names = dict(t.net.named_parameters())
@@ -120,7 +121,7 @@ def _tiny_make(kind, cfg_json, start, dir, entity_chunk):
     cfg = json.loads(cfg_json)
     if start == "new":
         return BcTrainer(cfg, tiny_net(kind), CPU, "f32", entity_chunk)
-    return BcTrainer.make(cfg_json, start, str(dir), entity_chunk, kind.lower(), CPU, "f32")
+    return BcTrainer.make(cfg_json, start, str(dir), entity_chunk, kind.lower(), CPU, "f32", sizes=net_sizes_of(testkit.net_config(kind=kind)))
 
 
 @pytest.mark.parametrize("chunk", ["0", "5"])

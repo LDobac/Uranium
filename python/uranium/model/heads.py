@@ -7,7 +7,9 @@ import torch.nn.functional as F
 
 from uranium.env import env_choice
 from uranium.model.config import HeadsConfig, InputDims, SpatialConfig
+from uranium.model.encoders import SEED_PATCH_HEAD, unpatchify
 from uranium.model.layers import GruCell, Linear, Mlp, ResMlp, conv_layout, entropy, gumbel_argmax, log_softmax_f32, masked_log_softmax, pick, tempered
+from uranium.model.value import fixed_linear
 
 HEAD_NAMES = ("action", "delay", "queued", "selected", "target_unit", "target_loc")
 TARGET_UNIT = 1
@@ -96,8 +98,21 @@ class LocationHead(nn.Module):
         return self.out(x).reshape(b, m * m)
 
 
+class PatchLocationHead(nn.Module):
+    def __init__(self, inp: InputDims, h: HeadsConfig, s: SpatialConfig, patch: int):
+        super().__init__()
+        with torch.random.fork_rng(devices=[]):
+            self.ar = fixed_linear(h.ar, s.patch_dim, SEED_PATCH_HEAD)
+            self.out = fixed_linear(s.patch_dim, patch * patch, SEED_PATCH_HEAD + 1)
+        self.patch, self.side = patch, inp.map_size
+
+    def forward(self, ar, sp: dict):
+        x = sp["patch"]
+        return unpatchify(self.out(F.relu(x + self.ar(ar).to(x.dtype)[:, None, :])), self.patch, self.side)
+
+
 class Heads(nn.Module):
-    def __init__(self, inp: InputDims, h: HeadsConfig, s: SpatialConfig, d_core: int, d_ctx: int, d_entity: int):
+    def __init__(self, inp: InputDims, h: HeadsConfig, s: SpatialConfig, d_core: int, d_ctx: int, d_entity: int, patch: int = 0):
         super().__init__()
         self.type_in = Linear(d_core, h.ar)
         self.type_res = nn.ModuleList(ResMlp(h.ar) for _ in range(2))
@@ -116,7 +131,7 @@ class Heads(nn.Module):
         self.ar_selected = Linear(h.key, h.ar)
         self.tgt_key = Linear(d_entity, h.key)
         self.tgt_query = Linear(h.ar, h.key)
-        self.location = LocationHead(inp, h, s)
+        self.location = PatchLocationHead(inp, h, s, patch) if patch else LocationHead(inp, h, s)
         self.max_select = h.max_select
         self.location_all_rows = False
 
@@ -203,7 +218,7 @@ class Heads(nn.Module):
             rows = used.nonzero().squeeze(1)
             if rows.numel() in (0, b):
                 return masked_log_softmax(self.location(ar, sp), loc_ok)
-        sub = {"s8": sp["s8"][rows], "skips": [s[rows] for s in sp["skips"]], "pool": sp["pool"][rows]}
+        sub = {k: [s[rows] for s in v] if isinstance(v, list) else v[rows] for k, v in sp.items()}
         lp = masked_log_softmax(self.location(ar[rows], sub), loc_ok[rows])
         if w is not None:
             lp = lp * w[:, None]

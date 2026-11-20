@@ -14,7 +14,7 @@ from uranium.clip import clip_global_norm
 from uranium.device import adam_impl, autocast, compile_graphs, compiled, impl_settings, mark_dynamic
 from uranium.model import UraniumNet, to_obs
 from uranium.model.auxiliary import aux_loss, jepa_std
-from uranium.model.config import AUX_JEPA_SLOTS, CORES, VariantConfig, aux_adam_eps, check_aux, new_net_config
+from uranium.model.config import AUX_JEPA_SLOTS, CORES, VariantConfig, aux_adam_eps, check_aux, check_net, new_net_config, size_mismatch
 from uranium.model.monitor import SPEC_COLUMNS, ReluMonitor, channel_counts_of, packed, relu_stats, spatial_alarm, spatial_due, spatial_every
 from uranium.model.net import stage, to_device, trim_entity_pad
 
@@ -58,6 +58,8 @@ class BcTrainer:
         self.aux_eps = aux_adam_eps(net.cfg.variant, cfg.get("aux"))
         self.ks = list(net.cfg.variant.aux_jepa)
         self.monitor_every = spatial_every(cfg)
+        if self.monitor_every and net.patch:
+            raise ValueError(f"[monitor] spatial_every = {self.monitor_every} with [model] spatial_patch = {net.patch}: the patch path has no spatial statistics (032-R25, 032-R29 ⑤)")
         self.net = net.to(device).train()
         self.device = device
         self.precision = precision
@@ -82,22 +84,28 @@ class BcTrainer:
             print("[bc] WARNING: the model has a win_open head but [value] win_open is not set: the head is not trained (041-R19)", flush=True)
 
     @classmethod
-    def make(cls, cfg_json: str, start: str, dir: str | None, entity_chunk: int, core: str, device: torch.device, precision: str, variant: VariantConfig | None = None) -> "BcTrainer":
+    def make(cls, cfg_json: str, start: str, dir: str | None, entity_chunk: int, core: str, device: torch.device, precision: str, variant: VariantConfig | None = None,
+             sizes: dict | None = None) -> "BcTrainer":
         cfg = json.loads(cfg_json)
         variant = variant or VariantConfig()
+        check_net(variant, sizes)
+        want = new_net_config(core, cfg["value"].get("win_open") is not None, variant, sizes)
         if variant.outer and cfg["seq_len"] % variant.outer:
             raise ValueError(f"[model] outer = {variant.outer} must divide seq_len {cfg['seq_len']} (032 §2.7)")
         if start == "new":
             seed = (cfg.get("train") or {}).get("model_seed")
             if seed is not None:
                 torch.manual_seed(int(seed))
-            net = UraniumNet(new_net_config(core, cfg["value"].get("win_open") is not None, variant))
+            net = UraniumNet(want)
         else:
             net, meta = ckpt.load_model(Path(dir), graft=variant if start == "init" else None)
             if net.cfg.core.kind != CORES[core]:
                 raise ValueError(f"checkpoint core {net.cfg.core.kind} != requested {CORES[core]}")
             if net.cfg.variant != variant:
                 raise ValueError(f"checkpoint [model] {net.cfg.variant} != requested {variant}")
+            diff = size_mismatch(net.cfg, want, sizes)
+            if diff:
+                raise ValueError(f"checkpoint sizes differ from the requested [net] (032-R28 ③): {'; '.join(diff)}")
             was = meta["config"].get("variant") or {}
             added = [f"{k} = {getattr(net.cfg.variant, k)}" for k in GRAFT_KEYS if getattr(net.cfg.variant, k) and not was.get(k)]
             if added:
@@ -131,7 +139,7 @@ class BcTrainer:
         self.opt.zero_grad(set_to_none=True)
         aux = bc_aux_counts(batch, cfg["seq_len"], self.ks) if self.aux else None
         parts = torch.zeros(len(PARTS) + (len(AUX_PARTS) if aux else 0), device=dev)
-        moments = torch.zeros(4, self.net.cfg.entity.d_model + self.net.cfg.spatial.pool, dtype=torch.float64, device=dev) if "jepa" in self.aux else None
+        moments = torch.zeros(4, self.net.cfg.jepa_width(), dtype=torch.float64, device=dev) if "jepa" in self.aux else None
         mon = ReluMonitor(self.net, points="spatial") if spatial_due(self.monitor_every, step + 1) else None
         k = self.net.cfg.variant.tokens()
         collate = lambda i: stage(trim_entity_pad(batch.group(i * g, min((i + 1) * g, lanes), cfg["seq_len"], self.pad_entities, self.net.cfg.heads.max_select), k), dev, self.precision)  # noqa: E731

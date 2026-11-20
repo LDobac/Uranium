@@ -12,7 +12,7 @@ from safetensors.torch import save_file
 from uranium import ckpt
 from uranium.bc.trainer import BcTrainer
 from uranium.model import UraniumNetConfig
-from uranium.model.config import VariantConfig, model_variant
+from uranium.model.config import VariantConfig, model_variant, net_sizes_of
 from uranium.model.layers import GROUP_NORM_EPS, RES_BMM_MAX_CH, ResBlock, conv_layout, group_norm
 from uranium.model.monitor import channel_stats, relu_stats
 
@@ -347,16 +347,17 @@ def test_end_relu_switch_032_r27():
 def test_bc_init_grafts_and_resume_refuses_041_r4_032_ac17(tiny_config, shards, tmp_path, capsys):
     cfg = bc_cfg(tiny_config)
     a = BcTrainer(cfg, make_net(PREACT), CPU, "f32")
+    sizes = net_sizes_of(a.net.cfg)
     a.train_batch(feeder(tiny_config, shards).next(), 3e-3, 0)
     start = tmp_path / "start"
     a.save(str(start), json.dumps({"step": 1}))
     cfg_json = json.dumps(cfg)
     with pytest.raises(ValueError, match=r"\[model\]"):
-        BcTrainer.make(cfg_json, "resume", str(start), 0, "lstm", CPU, "f32", NORM)
+        BcTrainer.make(cfg_json, "resume", str(start), 0, "lstm", CPU, "f32", NORM, sizes)
     with pytest.raises(ValueError, match=r"\[model\]"):
-        BcTrainer.make(cfg_json, "init", str(start), 0, "lstm", CPU, "f32", replace(NORM, core_skip=True))
+        BcTrainer.make(cfg_json, "init", str(start), 0, "lstm", CPU, "f32", replace(NORM, core_skip=True), sizes)
     assert "spatial_norm" not in capsys.readouterr().out, "no graft message before a refusal"
-    t = BcTrainer.make(cfg_json, "init", str(start), 0, "lstm", CPU, "f32", NORM)
+    t = BcTrainer.make(cfg_json, "init", str(start), 0, "lstm", CPU, "f32", NORM, sizes)
     assert "spatial_norm = 4 added" in capsys.readouterr().out
     assert t.net.cfg.variant == NORM
     pa, pt = params_of(a.net), params_of(t.net)
@@ -368,16 +369,16 @@ def test_bc_init_grafts_and_resume_refuses_041_r4_032_ac17(tiny_config, shards, 
     run = tmp_path / "run"
     t.save(str(run), json.dumps({"step": 1}))
     assert json.loads((run / "meta.json").read_text(encoding="utf-8"))["config"]["variant"]["spatial_norm"] == PER
-    r = BcTrainer.make(cfg_json, "resume", str(run), 0, "lstm", CPU, "f32", NORM)
+    r = BcTrainer.make(cfg_json, "resume", str(run), 0, "lstm", CPU, "f32", NORM, sizes)
     pr = params_of(r.net)
     assert all(torch.equal(moved[k], pr[k]) for k in moved)
     with pytest.raises(ValueError, match=r"\[model\]"):
-        BcTrainer.make(cfg_json, "init", str(run), 0, "lstm", CPU, "f32", PREACT)
+        BcTrainer.make(cfg_json, "init", str(run), 0, "lstm", CPU, "f32", PREACT, sizes)
     with pytest.raises(ValueError, match=r"\[model\]"):
-        BcTrainer.make(cfg_json, "resume", str(run), 0, "lstm", CPU, "f32", RELU)
+        BcTrainer.make(cfg_json, "resume", str(run), 0, "lstm", CPU, "f32", RELU, sizes)
     capsys.readouterr()
     for src, note in ((start, "spatial_norm = 4, spatial_end_relu = True added to the checkpoint's model, GroupNorm starts"), (run, "--init: spatial_end_relu = True added to the checkpoint's model (")):
-        u = BcTrainer.make(cfg_json, "init", str(src), 0, "lstm", CPU, "f32", RELU)
+        u = BcTrainer.make(cfg_json, "init", str(src), 0, "lstm", CPU, "f32", RELU, sizes)
         assert note in capsys.readouterr().out
         assert u.net.cfg.variant == RELU
         ps, pu = params_of(a.net if src is start else t.net), params_of(u.net)

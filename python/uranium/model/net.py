@@ -8,7 +8,7 @@ import torch.nn as nn
 from uranium.env import env_choice
 from uranium.model.config import UraniumNetConfig
 from uranium.model.core import build_core
-from uranium.model.encoders import EntityEncoder, ScalarEncoder, SpatialEncoder
+from uranium.model.encoders import EntityEncoder, PatchEncoder, ScalarEncoder, SpatialEncoder
 from uranium.model.heads import HEAD_NAMES, LOC_ROW_MODES, ActionTable, Heads, location_rows
 from uranium.model.layers import CHANNELS_LAST_MODES
 from uranium.model.value import ValueHeads
@@ -116,14 +116,17 @@ class UraniumNet(nn.Module):
     def __init__(self, cfg: UraniumNetConfig, cols: dict | None = None):
         super().__init__()
         assert cfg.input.map_size % 16 == 0, "map_size must be a multiple of 16 (four stride-2 stages)"
+        cfg.variant.check()
+        cfg.check_patch()
         self.cfg = cfg
         d_e = cfg.entity.d_model
-        d_in = d_e + cfg.spatial.pool + cfg.scalar.hidden
+        d_in = cfg.core_in_width()
+        p = self.patch = cfg.patch()
         self.entity = EntityEncoder(cfg.input, cfg.entity)
-        self.spatial = SpatialEncoder(cfg.input, cfg.spatial, d_e, preact=cfg.variant.spatial_preact)
+        self.spatial = PatchEncoder(cfg.input, cfg.spatial, d_e, p) if p else SpatialEncoder(cfg.input, cfg.spatial, d_e, preact=cfg.variant.spatial_preact)
         self.scalar = ScalarEncoder(cfg.input, cfg.scalar)
         self.core = build_core(d_in, cfg.core)
-        self.heads = Heads(cfg.input, cfg.heads, cfg.spatial, cfg.core.hidden, cfg.scalar.hidden, d_e)
+        self.heads = Heads(cfg.input, cfg.heads, cfg.spatial, cfg.core.hidden, cfg.scalar.hidden, d_e, p)
         self.value = ValueHeads(cfg.input, cfg.value, cfg.core.hidden, cfg.scalar.z_out, cfg.scalar.race_emb)
         self.variant = Variants(cfg, d_in) if cfg.variant.any() else None
         if self.variant is not None and self.variant.spatial_norm is not None:
@@ -132,10 +135,12 @@ class UraniumNet(nn.Module):
         assert len(cols["uses_select"]) == cfg.input.actions, "action table size != config.input.actions"
         self._cols = cols
         self.table = ActionTable(cols, "cpu")
-        if env_choice("URANIUM_CHANNELS_LAST", CHANNELS_LAST_MODES, "off") == "on":
+        if not p and env_choice("URANIUM_CHANNELS_LAST", CHANNELS_LAST_MODES, "off") == "on":
             self.to(memory_format=torch.channels_last)
 
     def conv_layout(self, channels_last: bool, stem_pad: bool) -> "UraniumNet":
+        if self.patch:
+            return self
         self.spatial.channels_last = self.heads.location.channels_last = channels_last
         self.spatial.stem_pad = stem_pad
         return self.to(memory_format=torch.channels_last if channels_last else torch.contiguous_format)
@@ -185,7 +190,7 @@ class UraniumNet(nn.Module):
         sp = self.spatial(obs, e) if film is None else self.spatial(obs, e, film)
         if sc is None:
             sc = self.scalar(obs)
-        core_in = torch.cat([e_pool, sp["pool"].to(e_pool.dtype), sc["c"].to(e_pool.dtype)], 1)
+        core_in = torch.cat([e_pool, sc["c"].to(e_pool.dtype)] if self.patch else [e_pool, sp["pool"].to(e_pool.dtype), sc["c"].to(e_pool.dtype)], 1)
         if self.outer is not None:
             core_in = core_in + self.outer.core_add(h_o).to(core_in.dtype)
         return core_in, e, sp, sc, e_pool
@@ -207,7 +212,7 @@ class UraniumNet(nn.Module):
             out["aux_priv"] = v.aux_priv(h)
         if v.aux_jepa is not None:
             out["aux_jepa"] = {int(k): g(h) for k, g in v.aux_jepa.items()}
-            out["jepa_target"] = torch.cat([e_pool, sp_pool.to(e_pool.dtype)], 1).detach()
+            out["jepa_target"] = (e_pool if sp_pool is None else torch.cat([e_pool, sp_pool.to(e_pool.dtype)], 1)).detach()
         return out
 
     def labels(self, group: dict, device, pinned: bool | None = None) -> dict:
@@ -261,7 +266,7 @@ class UraniumNet(nn.Module):
         win_open = self.value.win_open(h, sc["z"], sc["race"])
         res = {"logp": out["logp"], "entropy": out["entropy"], "dists": out["dists"], "value": value, "win_open": win_open, "state": state}
         if aux:
-            res.update(self._aux(h, e_pool, sp["pool"]))
+            res.update(self._aux(h, e_pool, sp.get("pool")))
         return res
 
     def trunk_seq(self, obs: dict, s0, t: int, entity_chunk: int = 0, phased: bool = False, phases: list | None = None, aux: bool = False):

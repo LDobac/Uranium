@@ -54,6 +54,7 @@ class SpatialConfig:
     stem_channels: int = 32
     stages: list = field(default_factory=lambda: [64, 64, 128, 128])
     pool: int = 256
+    patch_dim: int = 256
 
 
 @dataclass
@@ -93,6 +94,8 @@ class ValueConfig:
 
 
 MODEL2_KEYS = ("bypass", "spatial_preact", "core_skip", "aux_priv", "aux_jepa", "spatial_norm", "spatial_end_relu")
+OFF_KEYS = (*MODEL2_KEYS, "spatial_patch")
+CNN_KEYS = ("spatial_preact", "spatial_norm", "spatial_end_relu")
 AUX_JEPA_SLOTS = 3
 
 
@@ -109,6 +112,7 @@ class VariantConfig:
     aux_jepa: list = field(default_factory=list)
     spatial_norm: int = 0
     spatial_end_relu: bool = False
+    spatial_patch: int = 0
 
     def arch(self) -> bool:
         return self.terrain or self.ctx_token or self.attn_pool or self.outer > 0
@@ -117,7 +121,7 @@ class VariantConfig:
         return self.bypass or self.spatial_preact or self.core_skip or self.aux_priv or bool(self.aux_jepa) or self.spatial_norm != 0 or self.spatial_end_relu
 
     def any(self) -> bool:
-        return self.arch() or self.model2()
+        return self.arch() or self.model2() or self.spatial_patch != 0
 
     def aux(self) -> bool:
         return self.aux_priv or bool(self.aux_jepa)
@@ -127,7 +131,7 @@ class VariantConfig:
 
     def to_table(self) -> dict:
         d = asdict(self)
-        for k in MODEL2_KEYS:
+        for k in OFF_KEYS:
             if not d[k]:
                 del d[k]
         return d
@@ -148,6 +152,12 @@ class VariantConfig:
             raise ValueError(f"[model] spatial_norm = {self.spatial_norm} needs spatial_preact = true (032-R26)")
         if self.spatial_end_relu and not self.spatial_norm:
             raise ValueError("[model] spatial_end_relu = true needs spatial_norm (032-R27)")
+        if self.spatial_patch < 0:
+            raise ValueError(f"[model] spatial_patch = {self.spatial_patch}: expected 0 (CNN) or the patch side p (032-R29)")
+        if self.spatial_patch:
+            on = [k for k in CNN_KEYS if getattr(self, k)]
+            if on:
+                raise ValueError(f"[model] spatial_patch = {self.spatial_patch} with the CNN-only switches {on} (032-R29 ⑤)")
         return self
 
     def grafts_onto(self, base: "VariantConfig") -> bool:
@@ -188,8 +198,27 @@ class UraniumNetConfig:
     def from_dict(cls, d: dict) -> "UraniumNetConfig":
         return _load(cls, d)
 
+    def patch(self) -> int:
+        return self.variant.spatial_patch
+
+    def core_in_width(self) -> int:
+        return self.entity.d_model + (0 if self.patch() else self.spatial.pool) + self.scalar.hidden
+
+    def jepa_width(self) -> int:
+        return self.entity.d_model + (0 if self.patch() else self.spatial.pool)
+
+    def check_patch(self) -> "UraniumNetConfig":
+        p, side = self.patch(), self.input.map_size
+        if p and side % p:
+            raise ValueError(f"[model] spatial_patch = {p} does not divide the map side {side} (032-R29 ②)")
+        if p and self.spatial.patch_dim <= 0:
+            raise ValueError(f"[net] spatial.patch_dim = {self.spatial.patch_dim}: expected a width > 0 (032-R28)")
+        return self
+
     def to_dict(self) -> dict:
         d = asdict(self)
+        if not self.patch():
+            del d["spatial"]["patch_dim"]
         if not self.variant.any():
             del d["variant"]
         else:
@@ -256,18 +285,127 @@ def input_dims() -> InputDims:
 CORES = {"lstm": "Lstm", "gtrxl": "Gtrxl"}
 
 
-def new_net_config(core: str, win_open: bool, variant: VariantConfig | None = None) -> UraniumNetConfig:
-    cfg = UraniumNetConfig()
-    cfg.input = input_dims()
-    cfg.core.kind = CORES[core]
-    cfg.value.win_open = win_open
-    if variant is not None:
-        cfg.variant = variant
+NET_TABLES = {"entity": EntityConfig, "spatial": SpatialConfig, "scalar": ScalarConfig, "core": CoreConfig, "heads": HeadsConfig, "value": ValueConfig}
+NET_REFUSED = {"input": "observation sizes come from the feature schema (030)", "core.kind": "use --core", "value.win_open": "use [value] win_open"}
+NET_CNN_KEYS = ("spatial.stem_channels", "spatial.stages", "spatial.pool", "heads.loc_ar_channels")
+NET_PATCH_KEYS = ("spatial.patch_dim",)
+NET_NOT_SIZE = ("entity.dropout",)
+CNN_STAGES = 4
+
+
+def _net_value(name: str, want, v):
+    if want in (float, "float"):
+        if type(v) is not float or not math.isfinite(v) or not 0.0 <= v < 1.0:
+            raise ValueError(f"[net] {name} = {v!r}: expected a float in [0, 1) (032-R28 ②)")
+        return v
+    if want in (list, "list"):
+        if type(v) is not list or len(v) != CNN_STAGES or any(type(x) is not int or x <= 0 for x in v):
+            raise ValueError(f"[net] {name} = {v!r}: expected a list of {CNN_STAGES} integers > 0 (032-R28 ②)")
+        return list(v)
+    if type(v) is not int or v <= 0:
+        raise ValueError(f"[net] {name} = {v!r}: expected an integer > 0 (032-R28 ②)")
+    return v
+
+
+def net_sizes_from_table(table: dict | None) -> dict:
+    table = table or {}
+    if not isinstance(table, dict):
+        raise ValueError(f"[net] = {table!r}: expected a table of sub-tables (032-R28)")
+    out = {}
+    for sec, v in table.items():
+        if sec in NET_REFUSED:
+            raise ValueError(f"[net] {sec}: not a [net] key, {NET_REFUSED[sec]} (032-R28 ②)")
+        cls = NET_TABLES.get(sec)
+        if cls is None:
+            raise ValueError(f"[net]: unknown table {sec!r} (known: {sorted(NET_TABLES)})")
+        if not isinstance(v, dict):
+            raise ValueError(f"[net] {sec} = {v!r}: expected a table (032-R28 ②)")
+        names = {f.name: f.type for f in fields(cls)}
+        sub = {}
+        for k, x in v.items():
+            name = f"{sec}.{k}"
+            if name in NET_REFUSED:
+                raise ValueError(f"[net] {name}: not a [net] key, {NET_REFUSED[name]} (032-R28 ②)")
+            if k not in names:
+                raise ValueError(f"[net] {sec}: unknown key {k!r} (known: {sorted(n for n in names if f'{sec}.{n}' not in NET_REFUSED)})")
+            sub[k] = _net_value(name, names[k], x)
+        out[sec] = sub
+    return out
+
+
+def net_keys(sizes: dict | None) -> list[str]:
+    return [f"{sec}.{k}" for sec, sub in (sizes or {}).items() for k in sub]
+
+
+def check_net(variant: VariantConfig, sizes: dict | None) -> None:
+    keys = net_keys(sizes)
+    if variant.spatial_patch:
+        bad = [k for k in keys if k in NET_CNN_KEYS]
+        if bad:
+            raise ValueError(f"[net] {bad}: CNN-only sizes with [model] spatial_patch = {variant.spatial_patch} (032-R29 ⑤)")
+    else:
+        bad = [k for k in keys if k in NET_PATCH_KEYS]
+        if bad:
+            raise ValueError(f"[net] {bad}: patch-path sizes without [model] spatial_patch (032-R29)")
+
+
+def apply_net(cfg: UraniumNetConfig, sizes: dict | None) -> UraniumNetConfig:
+    for sec, sub in (sizes or {}).items():
+        part = getattr(cfg, sec)
+        for k, v in sub.items():
+            setattr(part, k, list(v) if isinstance(v, list) else v)
     return cfg
 
 
-def model_variant(config: str) -> VariantConfig:
+def net_size_table(cfg: UraniumNetConfig) -> dict:
+    d = {sec: asdict(getattr(cfg, sec)) for sec in NET_TABLES}
+    for name in NET_REFUSED:
+        if "." in name:
+            sec, k = name.split(".")
+            del d[sec][k]
+    return d
+
+
+def net_sizes_of(cfg: UraniumNetConfig) -> dict:
+    d = net_size_table(cfg)
+    for name in (*NET_NOT_SIZE, *(NET_CNN_KEYS if cfg.patch() else NET_PATCH_KEYS)):
+        sec, k = name.split(".")
+        del d[sec][k]
+    return d
+
+
+def size_mismatch(have: UraniumNetConfig, want: UraniumNetConfig, sizes: dict | None = None) -> list[str]:
+    a, b = net_size_table(have), net_size_table(want)
+    skip = set(NET_NOT_SIZE) - set(net_keys(sizes))
+    return [f"{sec}.{k}: checkpoint {a[sec][k]!r} != requested {b[sec][k]!r}" for sec in NET_TABLES for k in a[sec] if a[sec][k] != b[sec][k] and f"{sec}.{k}" not in skip]
+
+
+def new_net_config(core: str, win_open: bool, variant: VariantConfig | None = None, sizes: dict | None = None) -> UraniumNetConfig:
+    cfg = UraniumNetConfig()
+    cfg.input = input_dims()
+    if variant is not None:
+        cfg.variant = variant
+    check_net(cfg.variant, sizes)
+    apply_net(cfg, sizes)
+    cfg.core.kind = CORES[core]
+    cfg.value.win_open = win_open
+    return cfg.check_patch()
+
+
+def _table(config: str) -> dict:
     import tomllib
 
     with open(config, "rb") as f:
-        return VariantConfig.from_table(tomllib.load(f).get("model"))
+        return tomllib.load(f)
+
+
+def model_variant(config: str) -> VariantConfig:
+    return VariantConfig.from_table(_table(config).get("model"))
+
+
+def model_net(config: str) -> tuple[VariantConfig, dict]:
+    t = _table(config)
+    variant = VariantConfig.from_table(t.get("model"))
+    sizes = net_sizes_from_table(t.get("net"))
+    check_net(variant, sizes)
+    return variant, sizes

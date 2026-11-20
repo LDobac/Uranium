@@ -146,6 +146,8 @@ class ReluMonitor:
     def __init__(self, net, inner: bool = True, points: str = "spatial", threshold: float = CONST_THRESHOLD):
         if points not in POINTS:
             raise ValueError(f"points {points!r}: expected one of {POINTS}")
+        if points == "spatial" and getattr(net, "patch", 0):
+            raise ValueError("the patch spatial path has no spatial encoder statistics (032-R25, 032-R29 ⑤)")
         self.net = net
         self.inner = inner
         self.points = points
@@ -170,6 +172,8 @@ class ReluMonitor:
         self.core_skipped = 0
 
     def expected(self) -> list[str]:
+        if self.net.patch:
+            return []
         sp = self.net.spatial
         out = ["spatial.stem"]
         for i in range(len(sp.downs)):
@@ -179,11 +183,13 @@ class ReluMonitor:
         return out
 
     def stats(self) -> dict:
-        missing = [k for k in self.expected() if k not in self.acc] + [k for k in CONST_POINTS if k not in self.mom]
+        cnn = not self.net.patch
+        missing = [k for k in self.expected() if k not in self.acc] + [k for k in CONST_POINTS if cnn and k not in self.mom]
         if missing:
             raise RuntimeError(f"ReluMonitor: no values for {missing}: run the eager module's forward with the monitor active (a torch.compile wrapper does not call the hooks)")
         out = {k: a.result() for k, a in self.acc.items()}
-        out["spatial.s8"] = out[f"spatial.bottleneck{len(self.net.spatial.bottleneck) - 1}"]
+        if cnn:
+            out["spatial.s8"] = out[f"spatial.bottleneck{len(self.net.spatial.bottleneck) - 1}"]
         for k, m in self.mom.items():
             out[k] = m.result(self.threshold)
         return out
@@ -210,6 +216,9 @@ class ReluMonitor:
     def _register(self):
         net = self.net
         if self.handles:
+            return
+        if net.patch:
+            self._register_all()
             return
         sp = net.spatial
 

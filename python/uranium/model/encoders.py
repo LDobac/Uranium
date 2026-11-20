@@ -8,6 +8,7 @@ from uranium.env import env_choice
 from uranium.kernels import ENTITY_ATTN_MODES
 from uranium.model.config import EntityConfig, InputDims, ScalarConfig, SpatialConfig
 from uranium.model.layers import Attention, FeedForward, Linear, Mlp, ResBlock, conv3x3, conv_layout, conv_wgrad, group_norm, masked_mean, stem_pad
+from uranium.model.value import fixed_linear
 
 BIAS_GRAD_MODES = ("embedding", "index_add", "table_t")
 
@@ -203,15 +204,60 @@ class SpatialEncoder(nn.Module):
         return {"s8": x, "skips": outs[:3], "pool": self.pool(x.flatten(1))}
 
     def scatter_mean(self, obs: dict, e, h: int, w: int):
-        b, n, _ = e.shape
-        v = self.scatter(e)
-        m = obs["entity_mask"].to(v.dtype)[..., None]
-        v = v * m
-        c = v.shape[2]
-        cells = obs["entity_cell"].long()[..., None]
-        total = torch.zeros(b, h * w, c, dtype=v.dtype, device=v.device).scatter_add(1, cells.expand(b, n, c), v)
-        count = torch.zeros(b, h * w, 1, dtype=v.dtype, device=v.device).scatter_add(1, cells, m)
-        return (total / count.clamp_min(1.0)).transpose(1, 2).reshape(b, c, h, w)
+        return scatter_mean(self.scatter, obs, e, h, w)
+
+
+SEED_PATCH = 0x3229_0000
+SEED_PATCH_HEAD = SEED_PATCH + 0x10
+POS_STD = 0.02
+
+
+def scatter_mean(lin: nn.Module, obs: dict, e, h: int, w: int):
+    b, n, _ = e.shape
+    v = lin(e)
+    m = obs["entity_mask"].to(v.dtype)[..., None]
+    v = v * m
+    c = v.shape[2]
+    cells = obs["entity_cell"].long()[..., None]
+    total = torch.zeros(b, h * w, c, dtype=v.dtype, device=v.device).scatter_add(1, cells.expand(b, n, c), v)
+    count = torch.zeros(b, h * w, 1, dtype=v.dtype, device=v.device).scatter_add(1, cells, m)
+    return (total / count.clamp_min(1.0)).transpose(1, 2).reshape(b, c, h, w)
+
+
+def patchify(x, p: int):
+    b, c, h, w = x.shape
+    return x.view(b, c, h // p, p, w // p, p).permute(0, 2, 4, 1, 3, 5).reshape(b, (h // p) * (w // p), c * p * p)
+
+
+def unpatchify(y, p: int, side: int):
+    b = y.shape[0]
+    g = side // p
+    return y.view(b, g, g, p, p).permute(0, 1, 3, 2, 4).reshape(b, side * side)
+
+
+class PatchEncoder(nn.Module):
+    def __init__(self, inp: InputDims, c: SpatialConfig, d_entity: int, patch: int):
+        super().__init__()
+        if inp.map_size % patch:
+            raise ValueError(f"[model] spatial_patch = {patch} does not divide the map side {inp.map_size} (032-R29 ②)")
+        self.scatter = Linear(d_entity, c.scatter_channels)
+        n = (inp.map_size // patch) ** 2
+        with torch.random.fork_rng(devices=[]):
+            self.proj = fixed_linear((inp.spatial_channels + c.scatter_channels) * patch * patch, c.patch_dim, SEED_PATCH)
+            g = torch.Generator().manual_seed(SEED_PATCH + 1)
+            self.pos = nn.Parameter(torch.randn(n, c.patch_dim, generator=g) * POS_STD)
+        self.patch = patch
+
+    def forward(self, obs: dict, e, film=None):
+        spatial = obs["spatial"]
+        h, w = spatial.shape[2], spatial.shape[3]
+        x = torch.cat([spatial, scatter_mean(self.scatter, obs, e, h, w).to(spatial.dtype)], 1)
+        y = self.proj(patchify(x, self.patch))
+        y = y + self.pos.to(y.dtype)
+        if film is not None:
+            g, b = film
+            y = y * (1.0 + g.to(y.dtype)[:, None, :]) + b.to(y.dtype)[:, None, :]
+        return {"patch": y}
 
 
 class ScalarEncoder(nn.Module):
