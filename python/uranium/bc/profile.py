@@ -27,7 +27,7 @@ def main(a) -> int:
     from uranium.bench.realbc import profile_update
     from uranium.device import configure, resolve
     from uranium.model import UraniumNet
-    from uranium.model.config import model_variant, new_net_config
+    from uranium.model.config import model_net, new_net_config
 
     os.environ["URANIUM_BC_PROFILE"] = "1"
     backend, device, precision = resolve(a.backend)
@@ -36,7 +36,8 @@ def main(a) -> int:
     cfg = json.loads(cfg_json)
     dirs = _core.dataset_dirs(a.dataset, a.shards)
     feeder = _core.Feeder(a.config, dirs, stage="s1", synthetic_maps=a.synthetic_maps)
-    net = UraniumNet(new_net_config(a.core, cfg["value"].get("win_open") is not None, model_variant(a.config)))
+    variant, sizes = model_net(a.config)
+    net = UraniumNet(new_net_config(a.core, cfg["value"].get("win_open") is not None, variant, sizes))
     chunk = int(os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0") or 0)
     t = BcTrainer(cfg, net, device, precision, chunk)
     rows = []

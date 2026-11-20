@@ -110,10 +110,13 @@ URANIUM_BC_FEED_THREADS=2                # 공급 스레드 (이 호스트는 3�
 - 벤치 스위트([060-R2](../spec/2026_10_15_22_24_060-infra.md)): `python -m uranium bench suite [--suite kernels,model,infer] [--filter <regex>] [--precision f32|bf16] [--budget 10] [--out docs/report/bench/<YYYY_MM_DD_HH_mm>_bench_<backend>.md] [--json local/work/bench/<name>.json]`
   - 커널·모델·추론 케이스 forward / forward+backward 중앙값·p95, CPU f32 대비 오차, 최대 GPU 할당.
   - 반복은 표준오차 < 평균 1%까지(워밍업 제외, 케이스당 `--budget`초까지).
-- 실데이터 BC update(060-R2, [AMB-041-7](../spec/README.md)): `python -m uranium bench bc (--dataset <rel> | --shards <dir>)... [--groups 1,2,4,8] [--updates 20] [--seed 1] [--phases] [--ops 25] [--json <log>]`
+  - 모델·추론 케이스 모델([032-R28](../spec/2026_10_15_22_24_032-model-architecture.md) ⑤): 기본은 코드 기본 크기. `--config <BC 설정>` = 그 설정 `[net]`·`[model]`, `--checkpoint <ckpt>` = 그 체크포인트 meta 모델 설정(둘 중 하나, 코어는 케이스 이름대로). 커널 케이스는 그대로.
+  - `--served`: 추론 케이스를 추론 서버 act 경로로(`URANIUM_INFER_COMPILE`, GPU면 `URANIUM_INFER_GRAPH`·`URANIUM_INFER_GRAPH_MAX_BATCH` graph). 예: B 구성 추론 지연·메모리 `bench suite --suite infer --config config/bc_m2b_s1.toml --served --out <md> --json <json>`.
+- 실데이터 BC update(060-R2, [AMB-041-7](../spec/README.md)): `python -m uranium bench bc (--dataset <rel> | --shards <dir>)... [--config config/bc.toml] [--groups 1,2,4,8] [--updates 20] [--seed 1] [--phases] [--ops 25] [--json <log>]`
   - 그룹 크기마다 같은 초기 가중치·batch로 update 시간, 데이터 대기, 최대 GPU 할당·상주 메모리([060-R3](../spec/2026_10_15_22_24_060-infra.md)), update별 손실. 첫 update는 워밍업(중앙값 제외).
+  - 모델은 `--config`의 `[net]`·`[model]`([032-R28](../spec/2026_10_15_22_24_032-model-architecture.md) ⑤, `bc`와 같은 크기 경로). JSON 그룹마다 `params`(파라미터 수).
 - 최적화 동등성([AMB-000-4](../spec/README.md)): 기준·후보를 같은 `--seed`·데이터로 `bench bc --updates 100 --json` → `python -m uranium bench loss <기준.json> <후보.json> [--group N] [--window 20]`(구간 평균 손실 상대 차이. 그룹 크기가 다르면 dropout 난수열이 다름).
-- BC 구간별·연산별 시간([060-AC4](../spec/2026_10_15_22_24_060-infra.md)): `python -m uranium bc-profile (--dataset <rel> | --shards <dir>)... [--backend cuda|rocm|cpu] [--core gtrxl|lstm] [--batches 3] [--ops 25] [--trace <chrome trace json>]`. 학습 중에는 `URANIUM_BC_PROFILE=1`로 update마다 구간 시간 로그.
+- BC 구간별·연산별 시간([060-AC4](../spec/2026_10_15_22_24_060-infra.md)): `python -m uranium bc-profile (--dataset <rel> | --shards <dir>)... [--backend cuda|rocm|cpu] [--core gtrxl|lstm] [--batches 3] [--ops 25] [--trace <chrome trace json>]`(모델은 `--config`의 `[net]`·`[model]`). 학습 중에는 `URANIUM_BC_PROFILE=1`로 update마다 구간 시간 로그.
 - 장치 비교([032-AC1](../spec/2026_10_15_22_24_032-model-architecture.md)·AC8): `pytest -m gpu tests/python`(CPU f32 대비, CUDA bf16은 잠정 허용치).
 - RL learner 벤치: [9 RL](#9-rl).
 
@@ -500,6 +503,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 - `--init`([AMB-042-13](../spec/README.md)): Main만 RL 체크포인트 폴더(`<shared>/checkpoints/<run>/ckpt-<step>`, 그 안 `agents/main`) 또는 그 `agents/main`에서 가중치만(옵티마이저 새로, update 0). `--bc`는 KL 참조, Exploiter 둘은 BC에서 시작·리셋. 모델 설정이 `--bc`와 다르면 시작 오류. run에 LATEST가 있으면(재시작·`supervise` 재실행 포함) `--init` 무시. 출발 출처는 `meta.json` `train.start`(`from`·`path`·`abs_path`, `--init`이면 `update`·`step`), 재개해도 유지.
 - [042-AC1](../spec/2026_10_15_22_24_042-rl-training.md)·[033-AC2](../spec/2026_10_15_22_24_033-reward.md): `--max-agent-steps 10000000`(run 누적, 도달하면 정상 종료, [042-R12](../spec/2026_10_15_22_24_042-rl-training.md)).
 - `--logs`가 상대 경로면 현재 폴더 기준 절대 경로(추론 서버 모델 폴더 `<logs>/infer/<agent>`).
+- 모델 크기·구조는 `--bc` 체크포인트 meta를 따름. RL 설정에 `[net]`이 있으면 시작 오류([032-R28](../spec/2026_10_15_22_24_032-model-architecture.md) ⑤, `bench rl`도). 패치 경로 모델([032-R29](../spec/2026_10_15_22_24_032-model-architecture.md))에 `[monitor] spatial_every`도 시작 오류, `URANIUM_RL_CHANNELS_LAST`는 무시.
 - learner 레인 그룹: `.env` `URANIUM_RL_MICRO_LANES`(0 = 전체, 없으면 `config/rl.toml` `micro_lanes`). gradient 합산 순서만 다름([032-R19](../spec/2026_10_15_22_24_032-model-architecture.md)).
 - 리플레이: `[replays] sample_every`(기본 100) 배수 게임과 승자 불일치 게임만 `runs/<run>/replays/`([042-R11](../spec/2026_10_15_22_24_042-rl-training.md)).
 - 시작·체크포인트마다 디스크 80% 경고([061-R8](../spec/2026_10_15_22_24_061-shared-storage.md)), `runs/*/replays/` 합계 100GB 초과 경고(지우지 않음, [060-R7](../spec/2026_10_15_22_24_060-infra.md)). 보존 `keep_checkpoints`(없으면 5, 0 = 전부).
@@ -528,8 +532,9 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
   - 체크포인트 `meta.json` `train.kl_reference`에 종족별 참조(`path`·`abs_path`·가중치 `sha256`). 예: `config/rl.toml` `[kl.head_scale]` 뒤 주석.
 
 ### learner 벤치 (032-R19)
-`python -m uranium bench rl --checkpoint <BC ckpt> [--config config/rl.toml] [--algo vtrace|ppo] [--backend cuda|rocm|cpu] [--learner new,reference] [--groups 1,2,4] [--off pinned,spatial_bf16] [--trim] [--updates 10] [--lanes 32] [--entities 64:192] [--templates 8] [--seed 1] [--phases] [--ops 25] [--trace <json>] [--isolate] [--references 1] [--json <log>] [--out <md>]`
+`python -m uranium bench rl (--checkpoint <BC ckpt> | --model-config <BC 설정> [--core gtrxl|lstm] [--model-seed 0]) [--config config/rl.toml] [--algo vtrace|ppo] [--backend cuda|rocm|cpu] [--learner new,reference] [--groups 1,2,4] [--off pinned,spatial_bf16] [--trim] [--updates 10] [--lanes 32] [--entities 64:192] [--templates 8] [--seed 1] [--phases] [--ops 25] [--trace <json>] [--isolate] [--references 1] [--json <log>] [--out <md>]`
 - 게임 없이 고정 합성 세그먼트(레인 템플릿을 망이 샘플한 라벨로)로 `Learner.update`: update 시간·최대 GPU 할당(learner만)·상주 메모리, update별 손실·KL·gradient norm. 첫 update 워밍업 제외.
+- `--model-config`: 체크포인트 대신 그 BC 설정 `[net]`·`[model]` 크기·구조의 무작위 초기화 모델(`--model-seed`, dropout 0). 학습한 체크포인트가 아직 없는 구성의 [060-AC7](../spec/2026_10_15_22_24_060-infra.md) ② 최악 모양용.
 - `--learner reference` = 최적화 전 learner(`uranium.rl.reference`). `--off` = 새 learner 준비 단계 하나씩 끄기; `--off pinned`는 page-locked 준비와 CUDA 비동기 read-back을 함께 끔. `--trim` = [032](../spec/2026_10_15_22_24_032-model-architecture.md) §2.7 엔티티 패딩 자르기(learner 기본 끔: 허용 오차 안에서만 같고 속도 이득 없음).
 - `--entities lo:hi` = 템플릿 엔티티 수 범위. [060-R3](../spec/2026_10_15_22_24_060-infra.md) 최악 모양 `--groups 1 --entities 512:512`(N_MAX 512).
 - 상주 메모리는 프로세스 누적 최대 → run별은 `--isolate`(learner × 그룹마다 자식 프로세스).
@@ -543,7 +548,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
   - 모델은 trunk + 행동 종류 헤드만(`forward_seq`의 `dists["action"]`). 판마다 순환 상태를 이어 한 번.
   - 행 특징·정답은 `--row-until`(기본 6:00) 전, 모델 pass·활성값은 `--act-until`(기본 4:00) 전, 활성값은 적 기준 건물 토큰이 있는 행만. `--read-until` = 그 프레임까지만 읽음(`--row-until`·`--act-until` 이상, 행 같고 parts 안 순서만 다름).
   - 기준 건물: 테란 배럭, 프로토스 게이트웨이, 저그 스포닝 풀. 적 종족은 첫 행 privileged 일꾼·본진 수로.
-  - 지점: 토큰, e_pool, sp_pool, c, h_t, GTrXL 하위(`gate`: x_in, 층마다 a·g1·f·out; `full`은 core_in, a_pre, f_pre도).
+  - 지점: 토큰, e_pool, sp_pool, c, h_t, GTrXL 하위(`gate`: x_in, 층마다 a·g1·f·out; `full`은 core_in, a_pre, f_pre도). 패치 경로 모델([032-R29](../spec/2026_10_15_22_24_032-model-architecture.md))은 sp_pool 없음(manifest `stages`에서도 빠짐, [045-R6](../spec/2026_11_20_09_12_045-scaleup-b-patch-lineage.md) ⑤).
   - `--cf`: 판 전체 반사실 pass 6개(이른·늦은 착공, 최대 관측 수 ±1 스칼라만, ±1 스칼라+토큰), 각자 순환 상태. 미완성 건물 명령 id는 종족별 관측값(`UNFINISHED_ORDER`), 실제 분포는 manifest `focus_orders`. `--act-until` 뒤 시작 chunk 확률은 비움(`intervene`은 그보다 늦은 창 거부).
   - 출력 `rows_pNNN.npz`, `acts_pNNN.npz`, `games.json`, `manifest.json`(체크포인트 sha256, 공용 드라이브 경로는 `<shared>/...`).
 - 회귀: `python -m uranium diag probes <dump> [--races T,P,Z] [--stages token,e_pool,sp_pool,c,x_in,L1.g1,L1.out,h,hc] [--gain resid|joint] [--boot 500] [--cap 0] [--no-mlp]`
@@ -551,12 +556,12 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
   - 지점마다 ridge·MLP(64), 판 단위 5겹 CV, 판 bootstrap 구간, 정답 섞기 대조군, 방해 변수 기준선.
   - `resid`(기본): 방해 변수 ridge 잔차에 지점 ridge(벌점 따로). `joint`: [지점, 방해 변수] 한 ridge(`python/uranium/diag/probe.py`).
 - 반사실 개입: `python -m uranium diag intervene <dump(--cf)> [--window 2160,5760]`: 1:30~4:00 마스크 가능 step에서 판마다 P(벙커 ≥ 1), 마린 기대 주문 수, 두 번째 배럭 P. 이른 − 늦은, +1 − −1 평균과 판 bootstrap 구간.
-- 죽은 채널([032-R25](../spec/2026_10_15_22_24_032-model-architecture.md)): `python -m uranium diag spatial --checkpoint <ckpt> [--checkpoint <ckpt> ...] (--dataset|--shards)... --out <json> [--split val] [--batches 2] [--skip-batches 2] [--precision auto|f32] [--const-threshold 1e-4]`
+- 죽은 채널([032-R25](../spec/2026_10_15_22_24_032-model-architecture.md)): `python -m uranium diag spatial --checkpoint <ckpt> [--checkpoint <ckpt> ...] (--dataset|--shards)... --out <json> [--split val] [--batches 2] [--skip-batches 2] [--precision auto|f32] [--const-threshold 1e-4]`(패치 경로 체크포인트는 대상이 없어 시작 오류)
   - 공간 단계(stem·stride-2 conv·ResBlock 안팎·bottleneck·s8), 엔티티 FFN, 헤드 ResMlp, 코어 FFN마다 `pos`(0보다 큰 비율)·`dead`(한 번도 안 켜진 채널 수). `S8` 채널·`s_pool` 차원 중 묶음 안 sd가 문턱([AMB-041-14](../spec/README.md)) 아래인 수 `const`와 정밀도(bf16 autocast 반올림 잡음 1e-4 근처 가능).
   - 학습기 연동([041-R25](../spec/2026_10_15_22_24_041-imitation-learning.md)·[042-R21](../spec/2026_10_15_22_24_042-rl-training.md)): `python/uranium/model/monitor.py` `relu_stats(points="spatial")`·`packed`(열 순서 `SPEC_COLUMNS`). 계약(update 전 s0, 상태 저장 없음, no_grad·eval, RNG 미사용, [032-AC15](../spec/2026_10_15_22_24_032-model-architecture.md))은 그 파일 머리말.
 - 코어 분해: `python -m uranium diag core-split <dump> --checkpoint <ckpt>`: 미완성 기준 건물 행 지점별 HP R², GRU 게이트마다 (1−z)·x·z·h~ 분산 비율과 R², 변수별 x_in→h_t 잔존 비율.
 - 요약: `python -m uranium diag summary --point <경로 지점> [--probes <json>] [--intervene <json>] [--spatial <json>] [--core-split <json>] --out <json>`(스키마 `uranium.diag.summary/1`, `python/uranium/diag/cue/summary.py`).
-- 경로 측정([050-R9](../spec/2026_10_15_22_24_050-evaluation.md))의 `cue_diag`(교사 보관분 + 사람 TvT·TvP)·`dead_channels`(학습 로그 `sp_*`, `tools/eval/spatial_logs.py`)는 `python tools/eval/protocol.py diag ... [--run]`이 고정 설정으로 만듦. 확인 `check-diag`, 표 `tools/eval/diag_table.py`([measurement_protocol](measurement_protocol.md) 4). `diag spatial`은 프로토콜 밖([AMB-050-5](../spec/README.md)).
+- 경로 측정([050-R9](../spec/2026_10_15_22_24_050-evaluation.md))의 `cue_diag`(교사 보관분 + 사람 TvT·TvP)·`dead_channels`(학습 로그 `sp_*`, `tools/eval/spatial_logs.py`; 패치 경로 체크포인트면 `not_measurable`로 측정 안 함, [032-R25](../spec/2026_10_15_22_24_032-model-architecture.md))는 `python tools/eval/protocol.py diag ... [--run]`이 고정 설정으로 만듦. 확인 `check-diag`, 표 `tools/eval/diag_table.py`([measurement_protocol](measurement_protocol.md) 4). `diag spatial`은 프로토콜 밖([AMB-050-5](../spec/README.md)).
 - 설정: 기본 = 10.1 저그 진단(활성값 4:00까지, 판당 상한 없음). 테란·프로토스 사람 리플레이(10.2.3)는 `dump --act-until 8640 --act-every 4`, `probes --cap 60 --boot 300`.
 - 재현 기준값(Checkpoint 1, 교사 보관분 433판, Linux ROCm f32): 미완성 풀 HP R² 토큰 0.991·e_pool 0.868·h_t 0.227, s8 양수 0%·128/128, `const` S8 128/128·`s_pool` 256/256.
 
@@ -565,7 +570,7 @@ target\release\uranium-train worker --queue <shared>/queue/bc.toml --backend cud
 
 ### plan-dump
 `python -m uranium diag plan-dump --checkpoint <ckpt> (--dataset <rel> | --shards <dir>)... --out <dir> [--splits val,test] [--games N] [--seed 1] [--backend cuda|rocm|cpu] [--lanes-per-group 8] [--row-until 14400] [--read-until F] [--gk 8,32] [--classes <json>] [--skip-views <json>]`
-- `diag dump`와 같은 경로(trunk + 행동 종류 헤드, `action_seq`), 같은 forward에서 JEPA 정답 y = LN([e_pool, s_pool])·g_k(h')·win_open도([032-R24](../spec/2026_10_15_22_24_032-model-architecture.md) 학습 전용 출력 읽기만).
+- `diag dump`와 같은 경로(trunk + 행동 종류 헤드, `action_seq`), 같은 forward에서 JEPA 정답 y = LN([e_pool, s_pool])·g_k(h')·win_open도([032-R24](../spec/2026_10_15_22_24_032-model-architecture.md) 학습 전용 출력 읽기만). 패치 경로 체크포인트(s_pool 없음)는 시작 오류([045](../spec/2026_11_20_09_12_045-scaleup-b-patch-lineage.md) 범위 밖).
 - `--row-until`(기본 10:00) 전 모든 실제 step이 한 행: h', y, privileged(정답용), 내 상태 34열(SCV·병력·건물 종류별 완성+생산 중, 서플라이(BWAPI 반 단위: 마린 = 2), 병력 합, 자기 시야 스칼라에서), 레이블 행동 종류·지연 bucket·가중치, 행동 종류 log-prob, type_mask, win_open, g_8·g_32, 프레임, 판 안 결정 번호.
 - `games.json`: 결과, 8:00 SCV ≥ 8, 빌드 분류(privileged 규칙, `--classes` 값도), 리플레이 sha256, 자기 시작 슬롯(`scalar_cat[2]`, sha256과 함께 관점), 맵 계열, 상대 종족.
 - 행은 레인 그룹마다 `rows/<필드>.bin`(호스트 메모리 일정). 행당 약 5.2 KB(g_k 포함), `--gk ''`면 약 3.2 KB. `--read-until` 기본 = `--row-until`.

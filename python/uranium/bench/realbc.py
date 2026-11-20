@@ -28,14 +28,15 @@ def run_group(a, group: int, device: torch.device, precision: str, log=print) ->
     from uranium import _core
     from uranium.bc.trainer import BcTrainer
     from uranium.model import UraniumNet
-    from uranium.model.config import model_variant, new_net_config
+    from uranium.model.config import model_net, new_net_config
 
     cfg = copy.deepcopy(json.loads(_core.bc_config(a.config, a.stage)[0]))
     cfg["micro_lanes"] = group
     dirs = _core.dataset_dirs(a.dataset, a.shards)
     feeder = _core.Feeder(a.config, dirs, stage=a.stage, synthetic_maps=a.synthetic_maps)
+    variant, sizes = model_net(a.config)
     torch.manual_seed(a.seed)
-    net = UraniumNet(new_net_config(a.core, cfg["value"].get("win_open") is not None, model_variant(a.config)))
+    net = UraniumNet(new_net_config(a.core, cfg["value"].get("win_open") is not None, variant, sizes))
     chunk = int(os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0") or 0)
     t = BcTrainer(cfg, net, device, precision, chunk)
     reset_peak(device)
@@ -53,7 +54,7 @@ def run_group(a, group: int, device: torch.device, precision: str, log=print) ->
         log(f"[bench bc] group {group} update {step}: {wall:.2f}s (wait {wait:.2f}s) loss {out['total']:.5f}")
     walls = [x["wall_s"] for x in updates[1:]]
     res = {
-        "group": group, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entity_chunk": chunk, "pad_entities": t.pad_entities, "updates": updates,
+        "group": group, "params": sum(x.numel() for x in net.parameters()), "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entity_chunk": chunk, "pad_entities": t.pad_entities, "updates": updates,
         "median_s": statistics.median(walls) if walls else None, "mean_s": statistics.fmean(walls) if walls else None,
         "p95_s": sorted(walls)[min(len(walls) - 1, math.ceil(0.95 * len(walls)) - 1)] if walls else None,
         "wait_median_s": statistics.median(x["wait_s"] for x in updates[1:]) if walls else None,

@@ -16,6 +16,10 @@ def add_parser(sub) -> None:
     s.add_argument("--budget", type=float, default=10.0, help="seconds per timed loop at most")
     s.add_argument("--out", help="markdown report")
     s.add_argument("--json", help="raw results")
+    m = s.add_mutually_exclusive_group()
+    m.add_argument("--config", help="model and inference cases at the [net] sizes and [model] switches of this BC config (default: the code's default model)")
+    m.add_argument("--checkpoint", help="model and inference cases at the model config of this checkpoint's meta.json")
+    s.add_argument("--served", action="store_true", help="inference cases through the inference server's act path (URANIUM_INFER_COMPILE, URANIUM_INFER_GRAPH, URANIUM_INFER_GRAPH_MAX_BATCH)")
     s.set_defaults(fn=suite_main)
 
     b = bsub.add_parser("bc", help="real-data BC updates per lane group size")
@@ -38,7 +42,11 @@ def add_parser(sub) -> None:
     b.set_defaults(fn=bc_main)
 
     r = bsub.add_parser("rl", help="RL learner updates on a fixed synthetic batch per lane group size")
-    r.add_argument("--checkpoint", required=True, help="BC checkpoint directory (weights; dropout 0 as in RL)")
+    src = r.add_mutually_exclusive_group(required=True)
+    src.add_argument("--checkpoint", help="BC checkpoint directory (weights; dropout 0 as in RL)")
+    src.add_argument("--model-config", help="instead of a checkpoint: random weights (--model-seed) at the [net] sizes and [model] switches of this BC config")
+    r.add_argument("--core", choices=["lstm", "gtrxl"], default="gtrxl", help="with --model-config")
+    r.add_argument("--model-seed", type=int, default=0, help="with --model-config: initial weights")
     r.add_argument("--config", default="config/rl.toml")
     r.add_argument("--algo", choices=["vtrace", "ppo"], default="vtrace")
     r.add_argument("--backend", choices=["cuda", "rocm", "cpu"])
@@ -95,7 +103,7 @@ def suite_main(a) -> int:
     backend, device, precision = resolve(a.backend)
     configure(backend)
     precision = a.precision or precision
-    ctx = Ctx(device, precision, not a.no_accuracy, a.budget)
+    ctx = Ctx(device, precision, not a.no_accuracy, a.budget, net=suite_net(a), served=a.served)
     rows = run_suites([s.strip() for s in a.suite.split(",") if s.strip()], ctx, a.filter, log=lambda m: print(m, file=sys.stderr, flush=True))
     env = environment(backend, precision, device)
     cmd = "python -m uranium bench " + " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "python -m uranium bench suite"
@@ -106,12 +114,30 @@ def suite_main(a) -> int:
     return 0
 
 
+def config_net(config: str, core: str):
+    from uranium import _core
+    from uranium.model.config import model_net, new_net_config
+
+    variant, sizes = model_net(config)
+    return new_net_config(core, json.loads(_core.bc_config(config, "s1")[0])["value"].get("win_open") is not None, variant, sizes)
+
+
+def suite_net(a):
+    from uranium import _core, ckpt
+    from uranium.model.config import UraniumNetConfig
+
+    if a.checkpoint:
+        return UraniumNetConfig.from_dict(ckpt.read_meta(Path(_core.resolve_checkpoint(a.checkpoint)))["config"])
+    return config_net(a.config, "gtrxl") if a.config else None
+
+
 def bc_main(a) -> int:
     import os
 
     from uranium.bench.realbc import run_group
     from uranium.bench.report import bc_markdown, environment
     from uranium.device import configure, resolve
+    from uranium.model.config import model_net
 
     if a.phases:
         os.environ["URANIUM_BC_PROFILE"] = "1"
@@ -120,7 +146,8 @@ def bc_main(a) -> int:
     backend, device, precision = resolve(a.backend)
     precision = a.precision or precision
     configure(backend, train=True)
-    env = environment(backend, precision, device) | {"entity_chunk": os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0"), "prefetch": os.environ.get("URANIUM_BC_PREFETCH", "default"), "file_ahead": os.environ.get("URANIUM_BC_FILE_AHEAD", "default"), "pad_entities": os.environ.get("URANIUM_BC_PAD_ENTITIES", "config")}
+    variant, sizes = model_net(a.config)
+    env = environment(backend, precision, device) | {"model": {k: v for k, v in variant.to_table().items() if v} or "default", "net": sizes or "default"} | {"entity_chunk": os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0"), "prefetch": os.environ.get("URANIUM_BC_PREFETCH", "default"), "file_ahead": os.environ.get("URANIUM_BC_FILE_AHEAD", "default"), "pad_entities": os.environ.get("URANIUM_BC_PAD_ENTITIES", "config")}
     cmd = "python -m uranium bench " + " ".join(sys.argv[2:])
     groups = []
     for g in a.groups.split(","):
@@ -153,12 +180,14 @@ def rl_main(a) -> int:
 
     import torch
 
-    from uranium import _core, ckpt, kernels
+    from uranium import _core, kernels
     from uranium.bench.report import environment
     from uranium.bench.rl import OFF, SyntheticSegments, markdown, run_learner
     from uranium.device import configure, impl_settings, resolve
     from uranium.rl.learner import MICRO_LANES_ENV
+    from uranium.rl.run import refuse_net
 
+    refuse_net(a.config)
     backend, device, precision = resolve(a.backend)
     off = tuple(x.strip() for x in a.off.split(",") if x.strip())
     bad = [x for x in off if x not in OFF]
@@ -175,11 +204,11 @@ def rl_main(a) -> int:
     net = batch = None
     switches = impl_settings()
     if not a.isolate:
-        net, _ = ckpt.load_model(Path(a.checkpoint), device, adjust=ckpt.no_dropout)
+        net = rl_net(a, device)
         switches = kernels.meta(net, device)
         batch = SyntheticSegments(net, cfg["lanes"], cfg["seq_len"], (lo, hi), a.templates, a.seed)
         net = net.cpu()
-    env = environment(backend, precision, device) | {"checkpoint": Path(a.checkpoint).name, "lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entities": a.entities, "switches": " ".join(switches)}
+    env = environment(backend, precision, device) | ({"checkpoint": Path(a.checkpoint).name} if a.checkpoint else {"model_config": a.model_config, "core": a.core, "model_seed": a.model_seed}) | {"lanes": cfg["lanes"], "seq_len": cfg["seq_len"], "entities": a.entities, "switches": " ".join(switches)}
     cmd = "python -m uranium bench " + " ".join(sys.argv[2:])
     runs: list = []
     md = ""
@@ -203,13 +232,28 @@ def rl_main(a) -> int:
     return 0
 
 
+def rl_net(a, device):
+    import torch
+
+    from uranium import ckpt
+    from uranium.model import UraniumNet
+
+    if a.checkpoint:
+        net, _ = ckpt.load_model(Path(a.checkpoint), device, adjust=ckpt.no_dropout)
+        return net
+    cfg = ckpt.no_dropout(config_net(a.model_config, a.core))
+    torch.manual_seed(a.model_seed)
+    return UraniumNet(cfg).to(device)
+
+
 def _rl_child(a, kind: str, group: int, log) -> dict:
     import subprocess
     import tempfile
 
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / "run.json"
-        argv = [sys.executable, "-m", "uranium", "bench", "rl", "--checkpoint", a.checkpoint, "--config", a.config, "--algo", a.algo, "--learner", kind, "--groups", str(group),
+        src = ["--checkpoint", a.checkpoint] if a.checkpoint else ["--model-config", a.model_config, "--core", a.core, "--model-seed", str(a.model_seed)]
+        argv = [sys.executable, "-m", "uranium", "bench", "rl", *src, "--config", a.config, "--algo", a.algo, "--learner", kind, "--groups", str(group),
                 "--updates", str(a.updates), "--entities", a.entities, "--templates", str(a.templates), "--seed", str(a.seed), "--off", a.off, "--ops", str(a.ops), "--json", str(out)]
         argv += (["--backend", a.backend] if a.backend else []) + (["--lanes", str(a.lanes)] if a.lanes else []) + (["--phases"] if a.phases else []) + (["--trim"] if a.trim else []) + (["--trace", a.trace] if a.trace else [])
         argv += ["--references", str(a.references)]

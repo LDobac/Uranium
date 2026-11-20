@@ -275,6 +275,14 @@ def _copy(net):
     return copy.deepcopy(net)
 
 
+def refuse_net(config: str) -> None:
+    import tomllib
+
+    with open(config, "rb") as f:
+        if "net" in tomllib.load(f):
+            raise SystemExit(f"{config}: [net] is a BC config table; RL takes the model sizes from the --bc checkpoint (032-R28 ⑤)")
+
+
 def _make(a, device, precision, cfg_json, resume):
     return Learners(json.loads(cfg_json), a.bc, a.init, None if resume is None else str(resume), device, precision, a.algo, Path(a.logs), a.max_batch, a.max_wait_ms)
 
@@ -282,6 +290,7 @@ def _make(a, device, precision, cfg_json, resume):
 def main(a) -> int:
     from uranium import _core
 
+    refuse_net(a.config)
     _core.install_stop_handler("rl")
     from uranium.device import configure, resolve
 

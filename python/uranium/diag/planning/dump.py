@@ -201,6 +201,8 @@ def run(a) -> int:
     T, LANES, G = fp.t, fp.lanes, fp.g
     ckpt_dir = Path(_core.resolve_checkpoint(a.checkpoint))
     net = fp.load(ckpt_dir, frozen=True)
+    if net.patch:
+        raise SystemExit(f"diag plan-dump: {ckpt_dir.name} uses the patch spatial path (spatial_patch = {net.patch}) and has no s_pool for the y target; the planning tools are not for this model (045)")
     want_gk = [int(x) for x in a.gk.split(",") if x.strip()]
     v = net.variant
     gk = [k for k in want_gk if v is not None and v.aux_jepa is not None and str(k) in v.aux_jepa]

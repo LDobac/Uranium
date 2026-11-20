@@ -521,3 +521,14 @@ def test_verdict_own_state_criterion():
     flat = dict(a=(0.001, -0.001, 0.003), h=(0.001, -0.002, 0.004), r=1.0)
     assert rows(_report(**flat))[3] is False and rows(_report(**flat), dict(TH_DEFAULTS, own_k=0))[3] is True
     assert rows(_report(**flat, cut=((0.01, -0.01, 0.02), (0.0, -0.02, 0.02), (0.01, -0.02, 0.03))))[3] is True
+
+
+def test_plan_dump_refuses_a_patch_model_045(tiny_config, shards, tmp_path):
+    from testkit import patch_checkpoint
+
+    from uranium.__main__ import main
+
+    ck = patch_checkpoint(tmp_path / "ck", variant=VariantConfig(aux_jepa=[1, 8]))
+    with pytest.raises(SystemExit, match="s_pool"):
+        main(dump_args(ck, shards, tiny_config, tmp_path / "d"))
+    assert not (tmp_path / "d").exists()

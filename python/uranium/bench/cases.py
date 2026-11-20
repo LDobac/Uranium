@@ -1,6 +1,7 @@
+import copy
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import torch
 import torch.nn as nn
@@ -9,7 +10,8 @@ import torch.nn.functional as F
 from uranium import kernels
 from uranium.bench.inputs import random_obs, sampled_labels
 from uranium.bench.timing import Timing, measure, peak_gib, reset_peak
-from uranium.device import autocast
+from uranium.device import autocast, compiled
+from uranium.env import env_choice
 from uranium.model import UraniumNet, action_columns, input_dims
 from uranium.model.config import CoreConfig, UraniumNetConfig, VariantConfig
 from uranium.model.core import LstmCore
@@ -26,6 +28,8 @@ class Ctx:
     precision: str
     accuracy: bool = True
     budget_s: float = 10.0
+    net: UraniumNetConfig | None = None
+    served: bool = False
 
 
 @dataclass
@@ -246,7 +250,7 @@ def masked_softmax(ctx: Ctx) -> Row:
 
 def pointer_loop(ctx: Ctx, net_cache: dict) -> Row:
     def make(dev):
-        net = model(net_cache, "Gtrxl", dev)
+        net = model(net_cache, "Gtrxl", dev, base=ctx.net)
         g = seeded(11)
         b, n = 16, 256
         obs = random_obs(b, n, net.cfg.input, dev, g)
@@ -268,41 +272,64 @@ VARIANTS = {
 }
 
 
-def model(cache: dict, kind: str, dev, seed: int = 0, variant: str | None = None) -> UraniumNet:
+ARCH_KEYS = ("terrain", "ctx_token", "attn_pool", "outer")
+
+
+def model(cache: dict, kind: str, dev, seed: int = 0, variant: str | None = None, base: UraniumNetConfig | None = None) -> UraniumNet:
     key = (kind, str(dev), variant)
     if key not in cache:
-        cfg = UraniumNetConfig()
+        cfg = UraniumNetConfig() if base is None else copy.deepcopy(base)
         cfg.input = input_dims()
         cfg.core.kind = kind
         if variant is not None:
-            cfg.variant = VARIANTS[variant]
+            v = VARIANTS[variant]
+            cfg.variant = v if base is None else replace(cfg.variant, **{k: getattr(v, k) for k in ARCH_KEYS})
         torch.manual_seed(seed)
         cache[key] = UraniumNet(cfg, action_columns()).to(dev)
         kernels.check(cache[key], dev)
     return cache[key]
 
 
+def served_act(net: UraniumNet, ctx: Ctx):
+    from uranium.agent.infer import INFER_GRAPH_MODES, GraphedAct
+
+    fn = compiled(net.act, "URANIUM_INFER_COMPILE")
+    if ctx.device.type == "cuda" and env_choice("URANIUM_INFER_GRAPH", INFER_GRAPH_MODES, "off") == "on":
+        return GraphedAct(fn, ctx.device, ctx.precision, int(os.environ.get("URANIUM_INFER_GRAPH_MAX_BATCH", "") or 0))
+
+    def eager(obs, state, temp):
+        with autocast(ctx.device, ctx.precision):
+            return fn(obs, state, temp)
+
+    return eager
+
+
 def net_act(ctx: Ctx, cache: dict, kind: str, b: int, n: int, name: str | None = None, variant: str | None = None) -> Row:
-    net = model(cache, kind, ctx.device, variant=variant).eval()
+    net = model(cache, kind, ctx.device, variant=variant, base=ctx.net).eval()
     obs = random_obs(b, n, net.cfg.input, ctx.device, seeded(20))
     state = net.init_state(b, ctx.device)
     gen = torch.Generator(device=ctx.device)
+    served = served_act(net, ctx) if ctx.served else None
 
     def act():
-        with torch.no_grad(), autocast(ctx.device, ctx.precision):
-            out = net.act(obs, state, 1.0, gen.manual_seed(20))
+        with torch.no_grad():
+            if served is not None:
+                out = served(obs, state, 1.0)
+            else:
+                with autocast(ctx.device, ctx.precision):
+                    out = net.act(obs, state, 1.0, gen.manual_seed(20))
         out["action"]["action"].cpu()
 
     reset_peak(ctx.device)
     row = Row(name or f"net_act_{kind.lower()}_b{b}_n{n}", f"B={b} N={n}", fwd=measure(act, ctx.device, budget_s=ctx.budget_s))
     row.peak_gib = peak_gib(ctx.device)
     params = sum(p.numel() for p in net.parameters())
-    row.note = f"p95 {row.fwd.p95_ms:.1f} ms (032-AC2 <= 40 ms at B16 N256), {params} params"
+    row.note = f"p95 {row.fwd.p95_ms:.1f} ms (032-AC2 <= 40 ms at B16 N256), {params} params" + (", inference server act path" if served is not None else "")
     return row
 
 
 def net_train(ctx: Ctx, cache: dict, kind: str, b: int, t: int, n: int, variant: str | None = None) -> Row:
-    net = model(cache, kind, ctx.device, variant=variant).train()
+    net = model(cache, kind, ctx.device, variant=variant, base=ctx.net).train()
     chunk = int(os.environ.get("URANIUM_BC_ENTITY_CHUNK", "0") or 0)
     obs = random_obs(b * t, n, net.cfg.input, ctx.device, seeded(30))
     labels = sampled_labels(net, obs, 30)

@@ -307,7 +307,7 @@ def run(a) -> int:
                     continue
                 at = torch.as_tensor(li * T + arow, device=device)
                 kk = torch.as_tensor(tok[arow], device=device)
-                rec = {"token": acts["E"][at, kk], "e_pool": acts["e_pool"][at], "sp_pool": acts["sp_pool"][at], "c": acts["c"][at], "h": acts["h"][at]}
+                rec = {"token": acts["E"][at, kk], **{k: acts[k][at] for k in cap.stages(STAGES[1:])}}
                 for k in cap.keys():
                     if k in acts:
                         rec[k] = acts[k][at]
@@ -325,7 +325,7 @@ def run(a) -> int:
         "data": [redact(d) for d in dirs], "splits": splits, "games_per_split": a.games, "seed": a.seed, "config": Path(a.config).as_posix(),
         "seq_len": T, "lanes": LANES, "lanes_per_group": G, "row_until": a.row_until, "act_until": a.act_until, "act_every": a.act_every,
         "read_until": a.read_until or None, "passes": list(passes), "cf_starts": {k: list(v) for k, v in starts.items()} if len(passes) > 1 else None,
-        "pb_actions": ["Build_Bunker", "Train_Marine", "Build_Barracks"], "stages": list(STAGES) + ([] if cap is None else cap.keys()),
+        "pb_actions": ["Build_Bunker", "Train_Marine", "Build_Barracks"], "stages": list(STAGES) if cap is None else cap.stages(STAGES) + cap.keys(),
         "core": None if net is None else net.cfg.core.kind, "outer": None if net is None else (net.outer is not None),
         "backend": backend, "precision": precision, "games": gid_next, "parts": parts.part, "stats": stats, "secs": round(time.time() - t0, 1),
         "focus_orders": focus_orders, "cf_orders": {r: {"unfinished": unfinished_order(r), "finished": tb.order_id("Nothing")} for r in tb.RACES},

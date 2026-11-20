@@ -1,5 +1,6 @@
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -69,6 +70,57 @@ def net_cfg(variant: VariantConfig | None = None, kind: str = "Lstm", dropout: f
 def make_net(variant: VariantConfig | None = None, seed: int = 7, **kw) -> UraniumNet:
     torch.manual_seed(seed)
     return UraniumNet(net_cfg(variant, **kw), action_columns())
+
+
+PATCH = 16
+PATCH_NET_TOML = f"""
+[model]
+spatial_patch = {PATCH}
+
+[net.entity]
+d_model = 32
+ffn = 64
+layers = 1
+heads = 4
+
+[net.core]
+hidden = 32
+gtrxl_layers = 2
+gtrxl_heads = 4
+gtrxl_memory = 4
+
+[net.scalar]
+hidden = 32
+
+[net.heads]
+ar = 32
+key = 16
+
+[net.value]
+hidden = 32
+
+[net.spatial]
+patch_dim = 16
+"""
+
+
+def patch_cfg(variant: VariantConfig | None = None, kind: str = "Lstm") -> UraniumNetConfig:
+    cfg = net_config(kind=kind, variant=replace(variant or VariantConfig(), spatial_patch=PATCH))
+    cfg.spatial.patch_dim = 16
+    return cfg
+
+
+def patch_net(seed: int = 7, variant: VariantConfig | None = None, kind: str = "Lstm") -> UraniumNet:
+    torch.manual_seed(seed)
+    return UraniumNet(patch_cfg(variant, kind), action_columns())
+
+
+def patch_checkpoint(path: Path, kind: str = "Gtrxl", variant: VariantConfig | None = None) -> Path:
+    net = patch_net(5, variant, kind)
+    path.mkdir(parents=True)
+    ckpt.save_model(path, net)
+    ckpt.save_meta(path, net.cfg, {}, "f32")
+    return path
 
 
 def params_of(net) -> dict:

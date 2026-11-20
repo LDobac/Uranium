@@ -34,9 +34,21 @@ def channels(spatial: dict | None = None) -> dict[str, int]:
     return ch
 
 
+def checkpoint_config(ckpt: Path) -> dict:
+    return json.loads((Path(ckpt) / "meta.json").read_text(encoding="utf-8"))["config"]
+
+
 def checkpoint_channels(ckpt: Path) -> dict[str, int]:
-    meta = json.loads((Path(ckpt) / "meta.json").read_text(encoding="utf-8"))
-    return channels(meta["config"]["spatial"])
+    return channels(checkpoint_config(ckpt)["spatial"])
+
+
+def checkpoint_patch(ckpt: Path) -> int:
+    return int((checkpoint_config(ckpt).get("variant") or {}).get("spatial_patch", 0))
+
+
+def not_measurable(path: Path, patch: int, from_update: int | None, until_update: int | None) -> dict:
+    return {"log": Path(path).name, "from_update": from_update, "until_update": until_update, "spatial_patch": patch,
+            "not_measurable": f"the patch spatial path (spatial_patch = {patch}) has no dead-channel targets (032-R25, 045-R6)"}
 
 
 def read_records(path: Path, agent: str = "main") -> tuple[list[dict], list[str]]:
@@ -109,6 +121,8 @@ def scan(path: Path, ch: dict[str, int], from_update: int | None = None, agent: 
 
 
 def line(name: str, r: dict) -> str:
+    if "not_measurable" in r:
+        return f"{name}: not measured: {r['not_measurable']}"
     if "dead" not in r:
         return f"{name}: no sp records from update {r['from_update']} (last step {r.get('last_step')})"
     c, w = r["const"], r["worst_dead_layer"]
@@ -120,15 +134,19 @@ def line(name: str, r: dict) -> str:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("logs", nargs="+")
-    p.add_argument("--checkpoint", help="a checkpoint folder of the run (its meta.json model config gives the channel counts)")
+    p.add_argument("--checkpoint", help="a checkpoint folder of the run (its meta.json model config gives the channel counts; a patch-path model is not measured)")
     p.add_argument("--from-update", type=int, default=None, help="default: lineage.toml [metric.dead_channels] from_update")
     p.add_argument("--until-update", type=int, default=None, help="records up to this update (the checkpoint's)")
     p.add_argument("--agent", default="main", help="RL train.csv rows of this agent")
     p.add_argument("--out")
     a = p.parse_args(argv)
-    ch = checkpoint_channels(Path(a.checkpoint)) if a.checkpoint else channels()
+    patch = checkpoint_patch(Path(a.checkpoint)) if a.checkpoint else 0
     frm = default_from_update() if a.from_update is None else a.from_update
-    res = {Path(x).stem: scan(Path(x), ch, frm, a.agent, a.until_update) for x in a.logs}
+    if patch:
+        res = {Path(x).stem: not_measurable(Path(x), patch, frm, a.until_update) for x in a.logs}
+    else:
+        ch = checkpoint_channels(Path(a.checkpoint)) if a.checkpoint else channels()
+        res = {Path(x).stem: scan(Path(x), ch, frm, a.agent, a.until_update) for x in a.logs}
     if a.out:
         Path(a.out).write_text(json.dumps(res if len(res) > 1 else next(iter(res.values())), indent=1) + "\n", encoding="utf-8")
     for n, r in res.items():

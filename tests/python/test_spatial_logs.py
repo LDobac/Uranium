@@ -40,3 +40,21 @@ def test_spatial_logs_summary_041_r25(tmp_path):
     csv_log.write_text("\n".join(rows) + "\n", encoding="utf-8")
     rc = spatial_logs.scan(csv_log, ch)
     assert rc["sp_records_from"] == 2 and rc["dead"]["stem"]["max"] == 5 and rc["dead_last"]["step"] == 800 and rc["alarm_lines"] == []
+
+
+def test_spatial_logs_patch_checkpoint_is_not_measured_032_r25(tmp_path, capsys):
+    from testkit import patch_checkpoint
+
+    log = bc_log(tmp_path / "s1.log", [(600, {})])
+    ck = patch_checkpoint(tmp_path / "ck")
+    out = tmp_path / "o.json"
+    assert spatial_logs.main([str(log), "--checkpoint", str(ck), "--from-update", "600", "--until-update", "700", "--out", str(out)]) == 0
+    r = json.loads(out.read_text(encoding="utf-8"))
+    assert r["spatial_patch"] == 16 and "032-R25" in r["not_measurable"] and "dead" not in r
+    assert (r["from_update"], r["until_update"]) == (600, 700)
+    assert "not measured" in capsys.readouterr().out
+    cnn = tmp_path / "cnn"
+    cnn.mkdir()
+    (cnn / "meta.json").write_text(json.dumps({"config": {"spatial": {"stem_channels": 32, "stages": [64, 64, 128, 128], "pool": 256}}}), encoding="utf-8")
+    assert spatial_logs.main([str(log), "--checkpoint", str(cnn), "--from-update", "600", "--out", str(out)]) == 0
+    assert "dead" in json.loads(out.read_text(encoding="utf-8"))

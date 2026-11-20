@@ -209,6 +209,8 @@ class Learner:
             raise ValueError(f"[aux] {AUX_EPS_KEY} is BC only (041-R23 ⑦): the RL learner refuses it (042-R21)")
         self.ks = list(net.cfg.variant.aux_jepa)
         self.monitor_every = spatial_every(cfg)
+        if self.monitor_every and net.patch:
+            raise ValueError(f"[monitor] spatial_every = {self.monitor_every} with [model] spatial_patch = {net.patch}: the patch path has no spatial statistics (032-R25, 032-R29 ⑤, 042-R21)")
         self.device = device
         self.precision = precision
         self.algo = algo
@@ -387,8 +389,7 @@ class Learner:
         apart = self.net.win_open_params()
         params = list(self.net.parameters())
         aux = rl_aux_counts(batch, t, lanes - k, self.ks) if self.aux else None
-        net_cfg = self.net.cfg
-        moments = torch.zeros(4, net_cfg.entity.d_model + net_cfg.spatial.pool, dtype=torch.float64, device=dev) if "jepa" in self.aux else None
+        moments = torch.zeros(4, self.net.cfg.jepa_width(), dtype=torch.float64, device=dev) if "jepa" in self.aux else None
         mon = ReluMonitor(self.net, points="spatial") if spatial_due(self.monitor_every, self.update_count + 1) else None
         kl_race = None
         if self.race_ref is not None:

@@ -59,6 +59,8 @@ def run(a) -> int:
         t0 = time.time()
         cdir = Path(_core.resolve_checkpoint(spec))
         net = fp.load(cdir, frozen=True)
+        if net.patch:
+            raise SystemExit(f"{redact(cdir)}: the patch spatial path (spatial_patch = {net.patch}) has no dead-channel targets (032-R25, 045-R6)")
         stream = fp.stream(dirs, a.split, games=None, seed=1, has_open=False, maps_dir=a.maps_dir, synthetic_maps=a.synthetic_maps)
         states = fp.states
         rows = 0

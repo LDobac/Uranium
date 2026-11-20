@@ -403,3 +403,22 @@ def test_summary_inputs_must_be_one_checkpoint():
         build("p", probes={"dump": {"checkpoint_sha256": "cc"}, "races": {}}, spatial=spatial)
     with pytest.raises(ValueError, match="2 checkpoints"):
         build("p", spatial=spatial)
+
+
+def test_patch_model_cue_dump_drops_sp_pool_045_r6(tiny_config, shards, tmp_path, monkeypatch):
+    from testkit import patch_checkpoint
+
+    from uranium.__main__ import main
+    from uranium.diag.cue.dump import load
+
+    monkeypatch.setattr(_core, "EvalStream", _PoolStream)
+    ck = patch_checkpoint(tmp_path / "ck")
+    common = ["--config", str(tiny_config), "--backend", "cpu", "--synthetic-maps", "--shards", str(shards)]
+    out = tmp_path / "dump"
+    assert main(["diag", "dump", "--checkpoint", str(ck), "--out", str(out), "--splits", "train", "--act-until", "1e9", "--row-until", "1e9", *common]) == 0
+    _, A, _, man = load(out)
+    assert man["stats"]["act_rows"] > 0
+    assert "sp_pool" not in man["stages"] and {"token", "e_pool", "c", "h"} <= set(man["stages"])
+    assert "sp_pool" not in A and {"token", "e_pool", "c", "h"} <= set(A)
+    with pytest.raises(SystemExit, match="patch spatial path"):
+        main(["diag", "spatial", "--checkpoint", str(ck), "--out", str(tmp_path / "sp.json"), "--split", "train", *common])

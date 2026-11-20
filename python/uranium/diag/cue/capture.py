@@ -10,6 +10,7 @@ CORE_SETS = {
 class Capture:
     def __init__(self, net, core: str = "gate"):
         self.net = net
+        self.has_pool = not getattr(net, "patch", 0)
         self.want = set(CORE_SETS[core])
         self.on = False
         self.cap: dict[str, list] = {}
@@ -30,6 +31,9 @@ class Capture:
             if self.want & {"f", "out"}:
                 hk.append(layer.gate2.register_forward_hook(lambda m, i, o, l=l: (self._put(f"L{l}.f", i[1]), self._put(f"L{l}.out", o)) and None))
         self.layers = len(getattr(core, "layers", []))
+
+    def stages(self, names) -> list[str]:
+        return [k for k in names if k != "sp_pool" or self.has_pool]
 
     def keys(self) -> list[str]:
         out = [k for k in ("core_in", "x_in") if k in self.want and getattr(self.net.core, "input", None) is not None]
@@ -55,7 +59,9 @@ class Capture:
             self.on = False
         bt = obs["entity_cat"].shape[0]
         b = bt // t
-        acts = {"h": tr["h"].detach(), "c": tr["sc"]["c"].detach(), "E": tr["e"].detach(), "sp_pool": tr["sp"]["pool"].detach()}
+        acts = {"h": tr["h"].detach(), "c": tr["sc"]["c"].detach(), "E": tr["e"].detach()}
+        if self.has_pool:
+            acts["sp_pool"] = tr["sp"]["pool"].detach()
         for k, lst in self.cap.items():
             acts[k] = torch.cat([x.reshape(b, -1, x.shape[-1]) for x in lst], 1).reshape(bt, -1)
         self.cap = {}
