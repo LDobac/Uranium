@@ -1,0 +1,85 @@
+lanes = 32
+seq_len = 64
+micro_lanes = 1
+grad_checkpointing = false
+pad_entities = 64
+lr = 3e-4
+min_lr = 3e-6
+warmup_steps = 2000
+total_steps = 500000
+weight_decay = 1e-4
+grad_clip = 1.0
+s2_lr_scale = 0.1
+keep_checkpoints = 0
+[heads]
+action = 1.0
+delay = 0.5
+queued = 0.2
+selected = 1.0
+target_unit = 1.0
+target_loc = 1.0
+
+[steps]
+s1 = 0
+s2 = 1197
+ablation_a = 0
+s2_warmup = 60
+
+[value]
+win = 0.5
+win_open = 0.5
+
+[data]
+z_drop = 0.25
+augment = true
+enemy_race_mask = 0.05
+seed = 4
+checkpoint_every = 5000
+checkpoint_minutes = 60
+chain_start_sources = ["botgen"]
+
+[data.subsample]
+fraction = 0.0524
+keep_sources = ["botgen"]
+
+[data.subsample.fraction_by_race]
+T = 0.051
+P = 0.0465
+Z = 0.0559
+
+[model]
+terrain = true
+ctx_token = true
+attn_pool = true
+outer = 32
+bypass = true
+core_skip = true
+aux_priv = true
+aux_jepa = [1, 8, 32]
+spatial_patch = 8
+
+[aux]
+priv = 0.2
+jepa = 0.1
+
+[net.entity]
+d_model = 512
+ffn = 2048
+layers = 6
+heads = 16
+
+[net.core]
+hidden = 1024
+gtrxl_layers = 4
+
+[net.scalar]
+hidden = 512
+
+[net.heads]
+ar = 512
+
+[net.value]
+hidden = 512
+
+[net.spatial]
+patch_dim = 512
