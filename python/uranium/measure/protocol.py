@@ -1078,8 +1078,8 @@ def cmd_check_bc_eval(a) -> None:
         raise SystemExit(f"MISMATCH {a.output}: {got} != pinned {want}")
     if "--bunker-before" in [str(x) for x in m.get("extra_args", [])] and "bunker_before" not in d:
         print(f"WARNING {a.output}: no `bunker_before` (run without --bunker-before 5760): regression gate check 3a will be MISSING")
-    if m.get("precision") and d.get("precision") != m["precision"]:
-        raise SystemExit(f"MISMATCH {a.output}: precision {d.get('precision')!r} != pinned {m['precision']!r}")
+    if m.get("precision") and (d.get("backend"), d.get("precision")) != (m["backend"], m["precision"]):
+        raise SystemExit(f"MISMATCH {a.output}: backend / precision {d.get('backend')!r} / {d.get('precision')!r} != pinned {m['backend']!r} / {m['precision']!r}")
     if m.get("loc_groups"):
         g = d.get("target_loc_groups")
         if not isinstance(g, dict) or not set(m["loc_groups"]) <= set(g):

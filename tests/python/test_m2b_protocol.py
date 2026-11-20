@@ -96,12 +96,12 @@ def test_val_loc_metric_045_r7(tmp_path, capsys, monkeypatch):
     with pytest.raises(SystemExit, match="REFUSED: metric val_loc is not in the menu of point t2"):
         protocol.main(["bc-eval", "--metric", "val_loc", "--lineage", "m2", "--point", "t2", "--checkpoint", "checkpoints/m2-teacher-t2/ckpt-3258"])
     grp = {k: {"steps": 10, "nll": 4.0, "within4": 0.5, "exact": 0.1, "err_mean": 9.0} for k in ("all", "build", "move", "rally", "other")}
-    good = {"split": "val", "games": 2395, "selection_seed": None, "precision": "f32", "action_top1": 0.72, "target_loc_groups": grp}
+    good = {"split": "val", "games": 2395, "selection_seed": None, "backend": "cuda", "precision": "f32", "action_top1": 0.72, "target_loc_groups": grp}
     f = tmp_path / "v.json"
     f.write_text(json.dumps(good), encoding="utf-8")
     protocol.main(["check-bc-eval", str(f), "--metric", "val_loc"])
     assert "location NLL 4.0000, within 4 cells 0.5000, build exact 0.1000, rally distance 9.000" in capsys.readouterr().out
-    for edit, want in (({"precision": "bf16"}, "precision 'bf16' != pinned 'f32'"), ({"games": 500, "selection_seed": 1}, "!= pinned"),
+    for edit, want in (({"precision": "bf16"}, "'cuda' / 'bf16' != pinned 'cuda' / 'f32'"), ({"backend": "rocm"}, "'rocm' / 'f32' != pinned"), ({"games": 500, "selection_seed": 1}, "!= pinned"),
                        ({"target_loc_groups": None}, "no `target_loc_groups`"),
                        ({"target_loc_groups": {**grp, "rally": {"steps": 0}}}, r"target_loc_groups.rally` has no scored step")):
         f.write_text(json.dumps({**good, **edit}), encoding="utf-8")

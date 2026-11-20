@@ -50,14 +50,14 @@
   - `s2e2b`(run `m2b-s2e2` 마지막): test, val 500(종족별), 위치 지표(`val_loc`), 단서 진단. 비교 `m2-s2e2`.
   - `t1b`(run `m2b-teacher-t1` 마지막)·`t2b`(run `m2b-teacher-t2` 마지막): `t2`와 같은 표 + `val_loc`. 비교 `t1b`↔t1(`t1` 지점에 없는 test·T1은 같은 체크포인트인 `D` 지점 값), `t2b`↔t2.
   - Checkpoint 1(`r1`)은 기존 수치. 지점 `compare` 필드에 비교 대상(`<줄기>:<지점>`), `protocol.py list`에 표시.
-  - 050-R10 게이트 미적용·기록만, 판정 문턱 없음. 단서 진단은 `sp_pool` 단계를 빼고 probes(`[lineage.m2b] cue_drop_stages`). 죽은 채널 통계 없음(`dead_channels` 거부).
+  - 050-R10 게이트 미적용·기록만, 판정 문턱 없음. 단서 진단은 `sp_pool` 단계를 빼고 probes(`[lineage.m2b] cue_drop_stages`). 죽은 채널 통계 없음(`dead_channels` 거부 → `protocol.py diag --lineage m2b`는 `--metrics cue_diag`를 줌).
 - `metrics` = Checkpoint 1 경로에서 잰 지표(바로 비교 가능). `optional` = Checkpoint 1 값 없는 지표. 그중 050-R9 지점 표가 요구하는 칸은 `ck1_supplement`로 Checkpoint 1 쪽 보충 측정 가능.
 
 | 지표 | 내용 | 고정 조건 |
 |---|---|---|
 | `val500` | 대상 맵 val 500게임 teacher forcing | seed 1, ROCm f32, `config/bc.toml` |
 | `val500_race` | `val500` 상대 종족별([050-R10][s050] ②) | `val500`과 같은 실행. bc-eval 출력 `by_enemy_race`(종족별 step·top-1·NLL). 이 필드 없는 옛 출력은 `check-bc-eval`이 거부 |
-| `val_loc` | 위치 지표([045-R7][s045]): bc-eval `target_loc_groups`(아래 "지표 정의") | val 전체 2,395게임(선택 seed 없음), CUDA **f32**(`--precision f32`), `config/bc.toml` = [spatial_ablation] 1절 조건. `check-bc-eval`이 판 수·정밀도·묶음 확인. t2 값은 그 리포트 A0 재사용 |
+| `val_loc` | 위치 지표([045-R7][s045]): bc-eval `target_loc_groups`(아래 "지표 정의") | val 전체 2,395게임(선택 seed 없음), CUDA **f32**(`--precision f32`), `config/bc.toml` = [spatial_ablation] 1절 조건. `check-bc-eval`이 판 수·backend·정밀도·묶음 확인. t2 값은 그 리포트 A0 재사용(`out/t2_valall__summary.json`: `loc_nll`·`loc_le4`·`loc_exact`·`loc_err_mean` = `all`의 `nll`·`within4`·`exact`·`err_mean`, `fam.<묶음>.nll`·`.le4`·`.exact`·`.err` = 묶음별. `loc_le1`은 다른 지표) |
 | `test` | 대상 맵 test 전체(1,199게임) | CUDA, BC 기준선 |
 | `per_action` | 교사 보관분(2026-11-06 교사 판 val 165게임) 행동별 top-1 | CUDA, `--holdout orig` |
 | `rush` | [050-R6][s050] 러시 128판 | seed 목록 45,001…, stochastic, `zero_last_failed` false, 60분 |
@@ -97,7 +97,7 @@
 2. **teacher-forced 지표**(새 경로)
    - `python tools/eval/protocol.py bc-eval --metric val500 --lineage m2 --point s2e2 --checkpoint <ckpt>` → 고정 명령 출력, 그 backend 장비에서 실행.
    - 확인 `protocol.py check-bc-eval <json> --metric val500`(split·게임 수·selection seed).
-   - 위치 지표: `protocol.py bc-eval --metric val_loc --lineage m2b --point t2b --checkpoint checkpoints/m2b-teacher-t2/ckpt-<n>` → CUDA 장비에서 실행 → `check-bc-eval <json> --metric val_loc`(판 수 2,395·f32·묶음, 추적 4개 출력).
+   - 위치 지표: `protocol.py bc-eval --metric val_loc --lineage m2b --point t2b --checkpoint checkpoints/m2b-teacher-t2/ckpt-<n>` → CUDA 장비에서 실행 → `check-bc-eval <json> --metric val_loc`(판 수 2,395·CUDA f32·묶음, 추적 4개 출력).
    - 행동별: `python tools/eval/per_action.py --checkpoint <ckpt> --out <json>` → `python tools/eval/per_action_table.py BC=<json> m2-e1=<json> ...`.
      - 기존 필드 = 현재 관측 점수(Checkpoint 1 비교·Checkpoint 1 경로 연장 규칙, 경로 2는 기록만).
      - `chain_start` 블록 = 체인 시작 관측 점수([041-R30][s041] ⑤, 경로 2 연장 규칙 입력, 사용자 결정 2026-11-12). `--chain-start none`이면 생략.

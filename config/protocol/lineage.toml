@@ -52,7 +52,7 @@ backend = "cuda"
 precision = "f32"
 config = "config/bc.toml"
 loc_groups = ["all", "build", "move", "rally", "other"]
-reuse = { "m2:t2" = "A0 of docs/report/investigation/2026_11_19_23_00_spatial_ablation.md (sections 2 and 3, the same definition; user decision 2026-11-20)" }
+reuse = { "m2:t2" = "A0 of docs/report/investigation/2026_11_19_23_00_spatial_ablation.md (sections 2 and 3, the same definition; user decision 2026-11-20): its t2_valall__summary.json keys loc_nll, loc_le4, loc_exact, loc_err_mean, fam.<group>.nll / .le4 / .exact / .err = all and group nll, within4, exact, err_mean" }
 output = "artifacts/bc_loc/val_all/<run>__<ckpt>.json"
 
 [metric.test]
