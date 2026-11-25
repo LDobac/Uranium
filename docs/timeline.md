@@ -823,3 +823,5 @@
 ## 2026-11-25
 - 09:38 — 끝: m2b 사람 데이터 단계(s1e2·s2e2·혼합 7 epoch) — 원래 줄기 대비 학습 손실 정책·가치 머리 같거나 낮음, 위치 머리 차이 +0.32(1만) → +0.01(mix-e7 끝) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 8절)
 - 11:0x — 시작: m2b 첫 측정 지점 s2e2b와 DAgger r1 판 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 4·6절)
+- 14:06 — 결과: m2b 첫 측정 지점 s2e2b — val 500 행동 top-1 72.58%(원래 72.42%), 위치 NLL +0.17 나쁨; val 전체 위치 지표는 t2와 비슷(NLL +0.02, 4칸 안·건물 정확 칸·랠리 오차는 더 좋음) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 8절)
+- 14:06 — 시작: m2b DAgger r1 학습(1,267 update, r1 판 582판 기록) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 3절)
