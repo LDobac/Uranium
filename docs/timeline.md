@@ -813,3 +813,13 @@
 ## 2026-11-21
 - 02:1x — 보고: m2b 1만 update 학습 곡선 — 정책 머리(행동·지연·선택·대상 유닛)는 원래 m2-s1과 같은 수준, 위치 머리 +0.32(3,500 무렵 +0.42에서 줄어드는 중), 가치 머리 +0.22로 느리게 내려감(원인 미확인), 학습 계속 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 8절)
 - 09:22 — 새 리포트: m2b 가치 머리 학습 손실 상승 — val 30판에서는 B와 원래 모델이 같은 수준(1.7만 update 가치 MSE 0.99 대 0.90, 1만 1.50 대 1.48), 출력 포화·발산 아님, 학습 손실만의 효과로 봄(추정). 두 모델 모두 val에서 상수 예측 수준을 못 넘는 것은 기존 문제. 평가 중 Linux ROCm 1호기 응답 없음(재부팅 필요) ([m2b_value_head](report/investigation/2026_11_21_09_22_m2b_value_head.md))
+
+## 2026-11-23
+- 03:56 — 중단: 정전으로 m2b-s1e2 학습 멈춤(update 24,534) → 19:50 ckpt-24209부터 재개 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 8절)
+
+## 2026-11-24
+- 18:1x — 중단(사용자 지시): m2b-s2e2 update 8,136에서 정상 종료 → 22:4x 재개, 공용 드라이브 NAS 이전 반영 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 8절)
+
+## 2026-11-25
+- 09:38 — 끝: m2b 사람 데이터 단계(s1e2·s2e2·혼합 7 epoch) — 원래 줄기 대비 학습 손실 정책·가치 머리 같거나 낮음, 위치 머리 차이 +0.32(1만) → +0.01(mix-e7 끝) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 8절)
+- 11:0x — 시작: m2b 첫 측정 지점 s2e2b와 DAgger r1 판 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 4·6절)
