@@ -825,3 +825,5 @@
 - 11:0x — 시작: m2b 첫 측정 지점 s2e2b와 DAgger r1 판 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 4·6절)
 - 14:06 — 결과: m2b 첫 측정 지점 s2e2b — val 500 행동 top-1 72.58%(원래 72.42%), 위치 NLL +0.17 나쁨; val 전체 위치 지표는 t2와 비슷(NLL +0.02, 4칸 안·건물 정확 칸·랠리 오차는 더 좋음) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 8절)
 - 14:06 — 시작: m2b DAgger r1 학습(1,267 update, r1 판 582판 기록) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 3절)
+- 16:42 — 끝: m2b DAgger r1(15:12, 1,267 update)·r2(1,390 update, 판 294판 기록) 학습 → r3 판 시작 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 3절)
+- 18:2x — 시작: m2b 증류 d1 학습(1,948 update; r3 294판·d1 1,100판 기록, s2e2b 레이블 905,013 step) — 레이블 첫 실행은 test 측정과 겹쳐 메모리 부족 중 CUDA 오류, 단독 재실행 성공 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 3절)
