@@ -829,3 +829,5 @@
 - 18:2x — 시작: m2b 증류 d1 학습(1,948 update; r3 294판·d1 1,100판 기록, s2e2b 레이블 905,013 step) — 레이블 첫 실행은 test 측정과 겹쳐 메모리 부족 중 CUDA 오류, 단독 재실행 성공 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 3절)
 - 19:1x — 정리(사용자 지시): Linux ROCm 호스트 두 대·노트북 Linux 호스트를 비움(hostd 중지, 저장소 사본 삭제). 각 장비 `local/work`·`local/scripts`·`runs`·`.env`는 공용 드라이브 `host_backup/<장비>-20261125.tar.zst`(파일 수·바이트 일치 확인) — 문서의 그 장비 `local/work` 경로는 이 파일 안 같은 경로. m2b 줄기 판은 이 PC hostd만, ROCm 고정 측정은 장비 없음
 - 19:48 — 중단(사용자 지시): m2b 증류 d1 학습 update 1,727/1,948에서 정상 종료(체크포인트 `m2b-distill-d1/ckpt-1727`, 이어서 재개 가능). 모든 작업 대기 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 3절)
+- 00:21 — 끝: m2b 증류 d1 학습(ckpt-1727에서 재개, 1,948) → t1 판 300판(이 PC만, 무 248·패 52, 원래 214·86)
+- 01:49 — 결과: m2b s2e2b test — 행동 top-1 72.33%(원래 72.14%), 위치 NLL +0.15 나쁨, val 500과 같은 방향. 이어서 t1 학습 시작(2,845 update) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 8절)
