@@ -836,3 +836,4 @@
 - 04:15 — 끝: m2b 교사 t1 학습(2,845 update, 2시간 26분, 재시작 0, GPU 전용 최대 13.02 GiB) → gn-t1 학습 시작(t1과 같은 데이터) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 3절)
 - 09:08 — 끝: m2b gn-t1(06:42)·gn-t1e2 학습(각 2,845 update, 재시작 0) → t2 판 plan 커밋(원래 plan과 이름·체크포인트만 다름), t2 판 900판 시작(이 PC만) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 3절)
 - 10:06 — 시작: m2b 교사 t2 학습(3,246 update, 원래 3,258). t2 판 900판 09:50 끝(상대 Iron 비정상 종료 1판 중단), 재레이블 기록 298 + 578판(원래 299 + 575) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 3절)
+- 12:50 — 끝: m2b 교사 t2 학습(3,246 update, 2시간 45분, 재시작 0). m2b 줄기 학습 모두 끝 → t1b·t2b 측정 시작(이 PC만; ROCm 고정 val 500은 CUDA f32, 단서 진단은 CUDA bf16·Windows CPU probes로 따로 저장) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 8절)
