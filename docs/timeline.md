@@ -834,3 +834,4 @@
 - 00:21 — 끝: m2b 증류 d1 학습(ckpt-1727에서 재개, 1,948) → t1 판 300판(이 PC만, 무 248·패 52, 원래 214·86)
 - 01:49 — 결과: m2b s2e2b test — 행동 top-1 72.33%(원래 72.14%), 위치 NLL +0.15 나쁨, val 500과 같은 방향. 이어서 t1 학습 시작(2,845 update) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 8절)
 - 04:15 — 끝: m2b 교사 t1 학습(2,845 update, 2시간 26분, 재시작 0, GPU 전용 최대 13.02 GiB) → gn-t1 학습 시작(t1과 같은 데이터) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 3절)
+- 09:08 — 끝: m2b gn-t1(06:42)·gn-t1e2 학습(각 2,845 update, 재시작 0) → t2 판 plan 커밋(원래 plan과 이름·체크포인트만 다름), t2 판 900판 시작(이 PC만) ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 3절)
