@@ -1,0 +1,48 @@
+{
+  "checkpoint": "checkpoint-4",
+  "date": "2026-11-27",
+  "model": "m2b-teacher-t2/ckpt-3246",
+  "source": "<shared>/checkpoints/m2b-teacher-t2/ckpt-3246 (061 checkpoint; optim-main.safetensors stays there, not released)",
+  "lineage": [
+    "m2b-s1/ckpt-39096 -> m2b-s1e2/ckpt-39094 -> m2b-s2e2/ckpt-11387 (BC, 045-R2, scale-up B with 8x8 patch linear projection)",
+    "m2b-mix-e1 ... m2b-mix-e7/ckpt-1212 (041-R21 mix)",
+    "m2b-dagger-r1 -> m2b-dagger-r2 (041-R22 DAgger)",
+    "m2b-distill-d1 (044-R5 distillation round d1)",
+    "m2b-teacher-t1/ckpt-2845 (teacher round t1, point t1b)",
+    "m2b-gn-t1 -> m2b-gn-t1e2/ckpt-2845 (same data as t1)",
+    "m2b-teacher-t2/ckpt-3246 (teacher round t2, point t2b, end of the m2b lineage)"
+  ],
+  "training": {
+    "kind": "bc",
+    "updates": 3246,
+    "config": "config/bc_m2b_teacher_t2.toml",
+    "init": "m2b-gn-t1e2/ckpt-2845",
+    "precision": "bf16",
+    "trained": "2026-11-26"
+  },
+  "selection": "docs/report/experiment/2026_11_20_10_33_m2b_scaleup.md section 8 (user choice 2026-11-27: label the lineage end t2b)",
+  "report": "docs/report/release/2026_11_27_21_37_checkpoint3_4.md",
+  "load": "uranium.ckpt.load_model(\"releases/checkpoint-4\") (model.safetensors + meta.json; checked 2026-11-27 on CPU); plans name checkpoints under the shared drive, so copy this folder there to play it",
+  "files": {
+    "config/bc_m2b_teacher_t2.toml": {
+      "sha256": "5eb4850add16c0b6b3799ad4623eba9e567177b0f6805b47291db71439d451a7",
+      "bytes": 1098
+    },
+    "lineage.json": {
+      "sha256": "63a37b573f32792f67fc43f54a3cb188e8db1c74a909d40589411051797d4dfa",
+      "bytes": 135
+    },
+    "meta.json": {
+      "sha256": "8bbacdf8047b4025bb1dde216334a33d5092d9cef2af3cb7eee717a6f972841e",
+      "bytes": 3834
+    },
+    "model.safetensors": {
+      "sha256": "da2be48c4d7c0803884c3a840c039e7447364d1e79072dd3da7ca500600757e8",
+      "bytes": 554759580
+    },
+    "train_state.json": {
+      "sha256": "1c0c635c74ae8f26b9f90283fd35d54656ac33601859083b1239944b17278fa9",
+      "bytes": 5447
+    }
+  }
+}

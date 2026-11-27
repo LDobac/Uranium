@@ -1,0 +1,48 @@
+{
+  "checkpoint": "checkpoint-3",
+  "date": "2026-11-27",
+  "model": "m2-teacher-t2/ckpt-3258",
+  "source": "<shared>/checkpoints/m2-teacher-t2/ckpt-3258 (061 checkpoint; optim-main.safetensors stays there, not released)",
+  "lineage": [
+    "m2-s1/ckpt-39096 -> m2-s1e2/ckpt-39094 -> m2-s2e2/ckpt-11387 (BC, 041-R29)",
+    "m2-mix-e1 ... m2-mix-e7/ckpt-1212 (041-R21 mix)",
+    "m2-dagger-r1/ckpt-1285 -> m2-dagger-r2/ckpt-1408 (041-R22 DAgger, selected S)",
+    "m2-distill-d1/ckpt-2000 (044-R5 distillation round d1)",
+    "m2-teacher-t1/ckpt-2844 (044-R8 teacher round t1 = checkpoint-2)",
+    "m2-gn-t1/ckpt-2844 -> m2-gn-t1e2/ckpt-2844 (same data as t1)",
+    "m2-teacher-t2/ckpt-3258 (044-R8 teacher round t2, zerg build leak fix; final weight F by 044-R13 item 5)"
+  ],
+  "training": {
+    "kind": "bc",
+    "updates": 3258,
+    "config": "config/bc_m2_teacher_t2.toml",
+    "init": "m2-gn-t1e2/ckpt-2844",
+    "precision": "bf16",
+    "trained": "2026-11-18"
+  },
+  "selection": "docs/report/experiment/2026_11_17_20_08_teacher_leak_fix.md section 4 (m2-rl-fix-3 stopped by 044-R11, so F = t2 by 044-R13 item 5)",
+  "report": "docs/report/release/2026_11_27_21_37_checkpoint3_4.md",
+  "load": "uranium.ckpt.load_model(\"releases/checkpoint-3\") (model.safetensors + meta.json; checked 2026-11-27 on CPU); plans name checkpoints under the shared drive, so copy this folder there to play it",
+  "files": {
+    "config/bc_m2_teacher_t2.toml": {
+      "sha256": "013381c723b0c4b9b3a37e1b9646f5fd9fafd9ff313f06c936d5cbfd42540981",
+      "bytes": 1005
+    },
+    "lineage.json": {
+      "sha256": "63fc1c25d286bce505d36178c81bf062db6767ede8d217d3a1352811784de3f5",
+      "bytes": 68
+    },
+    "meta.json": {
+      "sha256": "b0b3350d799028851a3b3524a83f58f630ccf1223551a0f984706e788b2008ca",
+      "bytes": 3903
+    },
+    "model.safetensors": {
+      "sha256": "3412bceff83c323e24123ca8208dc820656c510b0939d8d4917ac26f97be6e04",
+      "bytes": 105752512
+    },
+    "train_state.json": {
+      "sha256": "c4c808b1703767a1c2195cc1a782a0d876028852e685648d7648e06585726c8b",
+      "bytes": 5613
+    }
+  }
+}

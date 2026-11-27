@@ -841,3 +841,4 @@
 ## 2026-11-27
 - 03:29 — m2b t2b 측정 중 Windows 업데이트 자동 재시작으로 위치 지표 단계 끊김 → 13:15 그 단계부터 다시 시작 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 8절)
 - 17:56 — 끝: m2b t1b·t2b 측정 → m2b 줄기 끝. 행동 NLL만 원래보다 조금 좋음, 교사 모드 누출·T1 승은 원래와 차이 없음(t1b 누출은 더 많음), 운영형 벙커 준비 나쁨. 누출 수정 효과는 같음 ([m2b_scaleup](report/experiment/2026_11_20_10_33_m2b_scaleup.md) 8절)
+- 21:37 — 라벨: Checkpoint 3 = 모델 2 최종 가중치 t2(`m2-teacher-t2/ckpt-3258`), Checkpoint 4 = 확대 B 줄기 끝 t2b(`m2b-teacher-t2/ckpt-3246`) (사용자 요청) ([checkpoint3_4](report/release/2026_11_27_21_37_checkpoint3_4.md))

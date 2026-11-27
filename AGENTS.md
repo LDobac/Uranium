@@ -10,6 +10,7 @@
 - Checkpoint 1: [리포트](docs/report/release/2026_11_08_12_21_checkpoint1.md), `releases/checkpoint-1/`
 - Checkpoint 1 RL: [리포트](docs/report/release/2026_11_08_13_35_checkpoint1_rl.md), `releases/checkpoint-1-rl/`
 - Checkpoint 2·Checkpoint 2 RL: [리포트](docs/report/release/2026_11_17_09_05_checkpoint2.md), `releases/checkpoint-2/`, `releases/checkpoint-2-rl/`
+- Checkpoint 3(모델 2 최종 t2)·Checkpoint 4(확대 B 끝): [리포트](docs/report/release/2026_11_27_21_37_checkpoint3_4.md), `releases/checkpoint-3/`, `releases/checkpoint-4/`
 - SC:R 남은 과제: [m7_scr_bridge](docs/report/milestone/2026_10_23_00_16_m7_scr_bridge.md) 4절
 - JEPA 계획 설계: [jepa_planning](docs/report/plan/2026_11_11_14_56_jepa_planning.md)
 
@@ -64,7 +65,7 @@ bridge/scr               samase 플러그인 (자체 Cargo workspace, 표 tables
 tools/                   openbw/, oss/, scr/, eval/(측정 명령 실행 파일 → `uranium.measure`, 호스트 목록), archive/(공용 드라이브 압축 보관), ablation/, worker/, casc-extract/, bwapi-tables/, env.sh·env.ps1, build_common.sh·build_common.ps1, pins.txt
 tests/                   python/(pytest, CPU 기준, `-m gpu` 장치 비교), fixtures/
 config/                  학습·평가 설정(`*.toml`), plans/, protocol/, plan_s0/, ladder/, hosts.example.toml
-releases/                checkpoint-1/, checkpoint-1-rl/, checkpoint-2/, checkpoint-2-rl/
+releases/                checkpoint-1/, checkpoint-1-rl/, checkpoint-2/, checkpoint-2-rl/, checkpoint-3/, checkpoint-4/
 third_party/             OpenBW·BWAPI·T1 봇 소스(git 제외) + patches/
 runs/                    코드 기본 출력 (git 제외)
 local/                   장비별 (git 제외)
