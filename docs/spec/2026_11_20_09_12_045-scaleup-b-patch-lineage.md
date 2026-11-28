@@ -83,9 +83,9 @@
 | `M2B-1` | 이 spec과 032·041·050·060 개정 | 승인(2026-11-20) |
 | `M2B-2` | 코드(Interfaces) + 테스트 + 별개 리뷰 | – |
 | `M2B-4` | 실측: 파라미터, [060]-AC7 최악 모양(Linux ROCm 호스트 12 GiB), CUDA 실데이터 100 update 속도·메모리, 추론 지연·메모리(두 호스트), 엔티티 재계산 조각. **끝 2026-11-20**([m2b_measure]) | 일정(추론 상한·재계산은 코디네이터 결정(사용자 위임 2026-11-20)) |
-| `M2B-5` | 표본 끝-끝(R4 ③) | – |
-| `M2B-6` | 본 줄기(R2) | 1만 update 보고(R5) |
-| `M2B-7` | 측정(R6·R7) + 리포트(R8) | 결과 |
+| `M2B-5` | 표본 끝-끝(R4 ③). **끝 2026-11-20** | – |
+| `M2B-6` | 본 줄기(R2). **끝 2026-11-26** | 1만 update 보고(R5) |
+| `M2B-7` | 측정(R6·R7) + 리포트(R8). **끝 2026-11-27**([m2b_scaleup] 8절) | 결과 |
 
 - `M2B-3`(위치 경로 사전 확인)은 없다(Q3).
 
@@ -176,6 +176,7 @@
 [checkpoint2]: ../report/release/2026_11_17_09_05_checkpoint2.md
 [bc_slowdown]: ../report/investigation/2026_11_20_09_23_bc_slowdown.md
 [m2b_measure]: ../report/bench/2026_11_20_11_23_m2b_measure.md
+[m2b_scaleup]: ../report/experiment/2026_11_20_10_33_m2b_scaleup.md
 [021]: 2026_10_15_22_24_021-opponent-pool.md
 [022]: 2026_11_14_08_18_022-matchup-teacher.md
 [032]: 2026_10_15_22_24_032-model-architecture.md
